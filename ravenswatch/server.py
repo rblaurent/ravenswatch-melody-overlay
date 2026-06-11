@@ -49,6 +49,8 @@ _PAGE = """<!doctype html>
     width: 250px; text-align: center;
   }
   .melody:not(.active) { opacity: 0.85; filter: saturate(0.85); }
+  .melody.completed { opacity: 0.4; filter: grayscale(0.7); }
+  .melody.completed .active-tag { visibility: visible; color: #9aa0b4; }
   .icon-wrap {
     position: relative; width: 112px; height: 112px;
     border-radius: 16px; padding: 6px;
@@ -116,7 +118,8 @@ function render(data) {
   lastKey = key;
 
   root.replaceChildren(...data.melodies.map(m => {
-    const card = el("div", "melody" + (m.active ? " active" : ""), "");
+    const card = el("div",
+      "melody" + (m.active ? " active" : "") + (m.completed ? " completed" : ""), "");
     card.style.setProperty("--note-color", NOTE_COLORS[m.notes] || "#ffffff");
 
     const wrap = el("div", "icon-wrap", "");
@@ -134,7 +137,7 @@ function render(data) {
       el("div", "name", m.name),
       el("div", "pill", m.notes + " notes"),
       el("div", "effect", m.effect),
-      el("div", "active-tag", "\\u266a ACTIVE \\u266a"),
+      el("div", "active-tag", m.completed ? "\\u2713 DONE" : "\\u266a ACTIVE \\u266a"),
     );
     return card;
   }));
@@ -185,7 +188,7 @@ def _read_snapshot(reader: MemoryReader) -> dict:
         info = None
     if not info:
         return snap
-    melodies, active = info
+    melodies, states = info
     snap["in_run"] = True
     snap["melodies"] = [
         {
@@ -194,11 +197,12 @@ def _read_snapshot(reader: MemoryReader) -> dict:
             "internal_name": m.internal_name,
             "notes": m.notes,
             "effect": m.effect,
-            "active": active is not None and m.internal_name == active.internal_name,
+            "active": st == 1,
+            "completed": st >= 2,
             "icon": f"/icons/{ICON_FILENAMES[m.display_name]}"
                     if m.display_name in ICON_FILENAMES else None,
         }
-        for i, m in enumerate(melodies)
+        for i, (m, st) in enumerate(zip(melodies, states))
     ]
     return snap
 

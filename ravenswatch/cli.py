@@ -128,14 +128,15 @@ def main():
             print(json.dumps({"error": "Cannot connect to game process. Is it running? Run as admin?"}))
             sys.exit(1)
         info = reader.read_run_info()
-        active = info[1] if info else None
-        if active is None:
-            active = reader.read_active_melody()
+        if info:
+            melodies, states = info
+            active = next((m for m, st in zip(melodies, states) if st == 1), None)
+        else:
+            active = reader.read_active_melody()  # legacy fallback
         reader.disconnect()
 
         out = {"melodies": None, "active_melody": None}
         if info:
-            melodies, _ = info
             out["melodies"] = [
                 {
                     "slot": i + 1,
@@ -143,9 +144,10 @@ def main():
                     "internal_name": m.internal_name,
                     "notes": m.notes,
                     "effect": m.effect,
-                    "active": active is not None and m.internal_name == active.internal_name,
+                    "active": st == 1,
+                    "completed": st >= 2,
                 }
-                for i, m in enumerate(melodies)
+                for i, (m, st) in enumerate(zip(melodies, states))
             ]
         if active:
             out["active_melody"] = active.display_name

@@ -216,6 +216,7 @@ class MelodyOverlay:
         self._reader = MemoryReader()
         self._icon_cache = {}  # (name, size) -> RGBA image
         self._font_cache = {}  # px -> font
+        self._prev_states = None  # last per-slot states, for the hide debounce
 
     # --- rendering ---
 
@@ -234,7 +235,7 @@ class MelodyOverlay:
             self._icon_cache[key] = img
         return self._icon_cache[key]
 
-    def _render_melodies(self, melodies: list[Melody], active: Melody | None,
+    def _render_melodies(self, melodies: list[Melody], states: list[int],
                          rect: tuple[int, int, int, int]):
         left, top, right, bottom = rect
         gw, gh = right - left, bottom - top
@@ -251,22 +252,24 @@ class MelodyOverlay:
         width = dot_xs[-1] - dot_xs[0] + col_w
         centers = [x - dot_xs[0] + half for x in dot_xs]
 
-        # slots before the active one are unlocked: the game HUD itself shows
-        # them on the staff, so the overlay must not draw on top of them
-        active_idx = 0
-        if active is not None:
-            for i, m in enumerate(melodies):
-                if m.internal_name == active.internal_name:
-                    active_idx = i
-                    break
+        # completed melodies (state 2) are drawn on the staff by the game HUD
+        # itself, so the overlay must not draw on top of them. Debounce: only
+        # trust "completed" once it's been read twice in a row, so a single
+        # transient misread can't blank a slot.
+        prev = self._prev_states if self._prev_states is not None else states
+        self._prev_states = states
+        hidden = [st >= 2 and pv >= 2 for st, pv in zip(states, prev)]
+        if all(hidden):
+            self._win.hide()
+            return
 
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
         for slot, (m, cx) in enumerate(zip(melodies, centers)):
-            if slot < active_idx:
+            if hidden[slot]:
                 continue
             color = NOTE_COLORS.get(m.notes, (255, 255, 255))
-            is_active = active is not None and m.internal_name == active.internal_name
+            is_active = states[slot] == 1
 
             tw = draw.textlength(m.display_name, font=font)
             tx = cx - tw / 2
@@ -335,10 +338,12 @@ class MelodyOverlay:
 
                     if info and rect:
                         self._render_melodies(info[0], info[1], rect)
-                    elif now < toast_until:
-                        self._render_toast(running)
                     else:
-                        self._win.hide()
+                        self._prev_states = None
+                        if now < toast_until:
+                            self._render_toast(running)
+                        else:
+                            self._win.hide()
                 time.sleep(0.05)
         except KeyboardInterrupt:
             pass

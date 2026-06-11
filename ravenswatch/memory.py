@@ -20,9 +20,12 @@ Two detection paths:
      hero      = vtable scan, RVA 0xf2b930 (one instance per player; pooled)
      context   = *(*(hero+0x08) + 0x30)   (null when not in a run)
      guids     = context+0x760, 3 x 16 bytes
-     active    = last element of the hero's linked-melody array at hero+0x13a0
-                 (count u32 at +0x13a8; the game links melodies one at a time
-                 as they become active, so the array starts at count=1)
+     states    = spawned MelodyEntityCpnt lifecycle field at cpnt+0x68
+                 (1 = being collected, 2 = completed; verified live by watching
+                 two completions: the field flips 1->2 exactly when the next
+                 melody links). The cpnts are reached via the linked-melody
+                 array at hero+0x13a0 (count u32 at +0x13a8) of EVERY hero,
+                 because in multiplayer a single hero's array can lag.
 
    When not in a run the context is null or its slots hold garbage that does not
    match any known melody GUID, which is how we detect "no run".
@@ -44,6 +47,7 @@ BASE_CPNT_REGISTRY_RVA = 0x14388c8  # static {MelodyEntityCpnt** buf, u32 count}
 CTX_MELODY_SLOTS_OFFSET = 0x760     # 3 x 16-byte melody GUIDs in the hero's scene context
 B_GUID_OFFSET = 0x1c8               # melody asset GUID inside the B object
 HERO_MELODY_ARRAY_OFFSET = 0x13a0   # {MelodyEntityCpnt** buf} at +0x13a0, u32 count at +0x13a8
+MELODY_STATE_OFFSET = 0x68          # spawned cpnt lifecycle: 1 = collecting, 2 = completed
 
 MEM_COMMIT = 0x1000
 WRITABLE_PROTECTIONS = {0x04, 0x40, 0x08, 0x80}
@@ -262,12 +266,19 @@ class MemoryReader:
                 guid_map[bytes(guid)] = melody
         return guid_map
 
-    def read_run_info(self) -> tuple[list[Melody], Melody | None] | None:
-        """Read all three melodies of the current run, plus the active one.
+    def read_run_info(self) -> tuple[list[Melody], list[int]] | None:
+        """Read the current run's three melodies plus a per-slot state.
 
-        Returns ([melody1, melody2, melody3] in unlock order, active) or None
-        if not in a run. The active melody comes from the hero's linked-melody
-        array and may be None right at run start before linking completes.
+        Returns ([melody1, melody2, melody3], [state1, state2, state3]) in
+        unlock order, or None if not in a run. States:
+          0 = not started yet, 1 = being collected (active), 2 = completed
+          (the game's own HUD shows completed melodies on the staff).
+
+        The trio comes from the first hero context whose GUID slots resolve.
+        States are read from the spawned MelodyEntityCpnt lifecycle field at
+        +0x68, reached through the linked-melody arrays of ALL heroes: the
+        melodies are group-wide, but in multiplayer a single hero's array can
+        lag, so we take the max state across heroes.
         """
         if not self.connected and not self.connect():
             return None
@@ -277,7 +288,10 @@ class MemoryReader:
         if len(guid_map) < 3:
             return None
 
-        for hero in _scan_for_pointer(h, self._base + HERO_VTABLE_RVA):
+        heroes = _scan_for_pointer(h, self._base + HERO_VTABLE_RVA)
+
+        melodies = None
+        for hero in heroes:
             entity = _read_ptr(h, hero + 0x08)
             ctx = _read_ptr(h, entity + 0x30) if entity else None
             if not ctx:
@@ -285,23 +299,40 @@ class MemoryReader:
             slots = _read_mem(h, ctx + CTX_MELODY_SLOTS_OFFSET, 48)
             if not slots or len(slots) < 48:
                 continue
-            melodies = [guid_map.get(bytes(slots[k * 16:(k + 1) * 16])) for k in range(3)]
-            if None in melodies:
-                continue  # lobby/stale context: slots don't hold melody GUIDs
+            trio = [guid_map.get(bytes(slots[k * 16:(k + 1) * 16])) for k in range(3)]
+            if None not in trio:
+                melodies = trio
+                break
+        if melodies is None:
+            return None  # lobby/stale context: slots don't hold melody GUIDs
 
-            active = None
+        states: dict[str, int] = {}
+        for hero in heroes:
             arr = _read_mem(h, hero + HERO_MELODY_ARRAY_OFFSET, 12)
-            if arr and len(arr) == 12:
-                arr_ptr, arr_cnt = struct.unpack('<QI', arr)
-                if arr_ptr and 0 < arr_cnt <= 8:
-                    elements = _read_mem(h, arr_ptr, arr_cnt * 8)
-                    if elements and len(elements) == arr_cnt * 8:
-                        # melodies are linked in unlock order; last = current
-                        last = struct.unpack_from('<Q', elements, (arr_cnt - 1) * 8)[0]
-                        name = _follow_melody_name(h, last) if last else None
-                        active = identify(name) if name else None
-            return (melodies, active)
-        return None
+            if not arr or len(arr) < 12:
+                continue
+            arr_ptr, arr_cnt = struct.unpack('<QI', arr)
+            if not arr_ptr or not 0 < arr_cnt <= 8:
+                continue
+            elements = _read_mem(h, arr_ptr, arr_cnt * 8)
+            if not elements or len(elements) < arr_cnt * 8:
+                continue
+            for i in range(arr_cnt):
+                cpnt = struct.unpack_from('<Q', elements, i * 8)[0]
+                name = _follow_melody_name(h, cpnt) if cpnt else None
+                melody = identify(name) if name else None
+                if not melody:
+                    continue
+                raw = _read_mem(h, cpnt + MELODY_STATE_OFFSET, 4)
+                if not raw or len(raw) < 4:
+                    continue
+                state = struct.unpack('<i', raw)[0]
+                if not 0 <= state <= 8:
+                    continue  # implausible value: misread, ignore
+                key = melody.internal_name
+                states[key] = max(states.get(key, 0), state)
+
+        return (melodies, [min(states.get(m.internal_name, 0), 2) for m in melodies])
 
     def read_all_melodies(self) -> list[Melody] | None:
         """Read all three run melodies in unlock order. None if not in a run."""

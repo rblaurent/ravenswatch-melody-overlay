@@ -63,44 +63,46 @@ Each base cpnt → entity (+0x08) → B object (+0x28); B carries the asset GUID
 B+0x1c8 and the name chain `B+0x70 → C+0x48 → D+0x18 → path string` (e.g.
 `...\Grant_Damage_Overtime.entity.ot`).
 
-The ACTIVE melody is the last element of the hero's linked-melody array at
-hero+0x13a0 (`{cpnt** buffer}`, u32 count at +0x13a8). The game links melodies
-one at a time as they become active, so count starts at 1. Lobby detection:
-context is null or its +0x760 slots don't match any known melody GUID.
+Per-slot STATE comes from the spawned MelodyEntityCpnt lifecycle field at
+cpnt+0x68 (1 = being collected, 2 = completed), reached through the
+linked-melody array at hero+0x13a0 (`{cpnt** buffer}`, u32 count at +0x13a8)
+of EVERY hero — max state per melody across heroes, because in multiplayer a
+single hero's array can lag (observed: HUD showed melody 1 active ~20 s
+before any hero's array linked it). `read_run_info()` returns
+`(melodies, states)` with states[i] in {0 = not started, 1 = active,
+2 = completed}. Lobby detection: context is null or its +0x760 slots don't
+match any known melody GUID.
 
 ### Active-only detection (legacy, still works)
 `read_active_melody()` uses the MelodyUiViewerEntityCpnt (vtable RVA 0xf295a0),
 finds which MelodyEntityCpnt it references, then follows the name chain
 `cpnt+0x08 → entity+0x28 → B+0x70 → C+0x48 → D+0x18 → name string`.
 
-### Known issue: completed LAST melody stays "active" (investigated 2026-06-11, unfixed)
-The overlay hides slots before the active one, but when melody 3 completes it
-never disappears: ACTIVE = last element of the hero's linked array, and nothing
-links after slot 3, so it reads "active" forever. (Slots 1/2 only hide because
-linking melody N+1 advances the array — completion itself is never read. If
-linking lags completion, slots 1/2 can also linger briefly.) The fix needs a
-"current melody completed" signal; not yet found. Live findings so far:
+### Completion detection (SOLVED 2026-06-11, shipped v1.0.2)
+The pre-v1.0.2 approach (ACTIVE = last element of the linked array) had two
+bugs: melody 3 read "active" forever after completion (nothing links after
+it), and multiplayer mistracked (per-hero arrays lag). Both fixed by the
+per-melody lifecycle field at cpnt+0x68.
 
+Evidence (`scratch/watch_completion.py` log, MP session 2026-06-11): Galahad's
+cpnt +0x68 went 1→2 at the exact poll where Long John Silver linked, and LJS
+went 1→2 exactly when Little Tailor linked. Caveat: melody-3 completion itself
+has not been directly observed (the run was stopped before) — the fix
+extrapolates the same lifecycle to slot 3; the watcher script remains in
+scratch/ if it ever needs re-verification.
+
+The overlay hides state-2 slots (the game HUD draws them itself) with a
+two-reads debounce against transient misreads, underlines the state-1 slot,
+and hides the whole window once all three are completed.
+
+Other findings from the investigation, for the record:
 - HeroMelodyPersistentData records (vtable 0xf0dc20) are created when a melody
-  LINKS (run start, 0 notes collected) and are all destroyed on run end —
-  run-scoped link records, useless for completion.
-- The spawned active cpnt shows `+0x64=8 +0x68=1 +0x6c=0` and `+0xc8=1 +0xcc=8`
-  at 0 notes. The `(n, 8)` pairs look like {count, capacity=8} array headers
-  (the MelodyUiViewer is full of them; their counts zero out on run end).
-- MelodyUiViewerEntityCpnt holds the active cpnt pointer at +0x68; it clears
-  when the run ends. Whether it also clears when melody 3 completes MID-RUN is
-  the key unverified question — if yes, "viewer ref gone while in a run" =
-  all melodies done.
-- The HUD "0/N" current-note counter was not located (all candidate fields are
-  0 at run start; needs a dump with notes collected).
-
-Missing observation: cpnt/viewer state while notes are collected and right
-after melody 3 completes. `scratch/watch_completion.py` (local, gitignored)
-logs all state changes to `scratch/completion_log.jsonl` during normal play —
-run it during a real session, then diff the lines around each completion.
-
-Fix sketch once the signal is known: in `read_run_info()`, when the last-linked
-melody reads as completed, report it so the overlay can hide all slots.
+  LINKS (run start, 0 notes) and are destroyed on run end — run-scoped link
+  records, not completion or compendium data.
+- MelodyUiViewerEntityCpnt holds the active cpnt pointer at +0x68; clears on
+  run end. Not used by the fix.
+- The HUD "0/N" current-note counter was never located (nothing in the dumped
+  cpnt ranges changed while notes were collected).
 
 ### Dead ends (kept for the record)
 - MelodyEntityCpntSettings slot reading (names don't resolve reliably)
@@ -117,7 +119,8 @@ melody reads as completed, report it so the overlay can hide all slots.
 - Hero controller vtable: 0xf2b930 (melody array +0x13a0, count +0x13a8)
 - Base MelodyEntityCpnt registry (static data): 0x14388c8
 - MelodyUiViewerEntityCpnt vtable: 0xf295a0
-- MelodyEntityCpnt vtable: 0xed2320
+- MelodyEntityCpnt vtable: 0xed2320 (spawned-instance lifecycle state at
+  +0x68: 1 = being collected, 2 = completed)
 - MelodyEntityCpntSettings vtable: 0xf1d048
 - HeroMelodyPersistentData vtable: 0xf0dc20 (0x20-byte inline records:
   {vtable, guid_lo, guid_hi, P}; P+0x18 → B)
@@ -126,6 +129,61 @@ melody reads as completed, report it so the overlay can hide all slots.
 - 4 notes: Fairy Godmother, Tortoise, Lady of the Lake, Galahad
 - 5 notes: Merry Men, Goose Girl, Hansel & Gretel, Little Tailor
 - 6 notes: Lucky Hans, Otohime, Long John Silver, Sheherazad
+
+## Melody selection rules (investigated 2026-06-11)
+
+Question: does Little Tailor get special treatment in run-melody selection?
+Answer: YES, three independent confirmations.
+
+### 1. Blocking game modifiers (read from MelodyDefinition data, verified live)
+Each MelodyDefinition carries a custom-flag filter listing the custom-mode
+modifiers that REMOVE it from the selection pool (so its effect can't be
+obsolete under that mode):
+
+| Melody | Blocked by modifier | Reason |
+|---|---|---|
+| Little Tailor | **OneChapter** (Single Chapter mode) | consumables-past-level-10 needs a long run |
+| Long John Silver | NoMinimap | reveals the map |
+| Lady of the Lake | NoFountains | fountain bonus |
+| Galahad | NightOnly (+2 more entries) | heals on day/night transitions |
+| Otohime | NoBossTimer (+1 more) | slows hourglass |
+| Hansel & Gretel | NoBossTimer | boss DoT tied to timer |
+| other 6 | none | — |
+
+In default GDQ settings (no custom modifiers) none of these blocks apply.
+
+### 2. Slot restriction (community + our observations, not found in def data)
+Steam community reports: Little Tailor only ever appears as the THIRD melody;
+Fairy Godmother only 2nd or 3rd; both are rare. Our 9 sampled trios agree:
+LT appeared once — in slot 3 (run trio Merry Men / Hansel & Gretel / Little
+Tailor); FG appeared once — in slot 3. Every other melody moved freely between
+slots (e.g. Galahad seen in slots 1, 2 and 3). The slot gating is NOT encoded
+in MelodyDefinition fields (full diff found nothing) — it most likely lives in
+per-chapter melody pools in the quest/scene assets. No meta-unlock is needed:
+LT rolled on a fresh profile.
+
+### 3. Extra effect entities (definition data)
+Only two defs have entries in the extra-entity-resources list (def+0x310 ptr,
+count at +0x318): Little Tailor → {Hero_Drop_Bag, Minimap_Reveal_Ping}
+(consumables drop in a bag + map ping), Merry Men → {Remove_Key_Requirement_
+Host_Effect}. Effect plumbing, not selection — but it confirms these two are
+the "special-cased" melodies in the data.
+
+### Reverse-engineering notes (for the next session)
+- TRUE MelodyDefinition base = *(base_cpnt + 0x168). PITFALL: the vtable scan
+  for RVA 0xf25888 hits the SECONDARY vtable at def+0x288 — all offsets in a
+  scan-based dump are shifted by +0x288.
+- Useful def fields (from true base): +0x310/+0x318 extra-resources list,
+  +0x320 note count (4/5/6 — good identity check), +0x328 oCCustomFlagFilter
+  {+0x330 list1 buf/cnt +0x338/0x340, +0x348 list2 buf/cnt +0x350/0x358};
+  list entries are 16 bytes {hash, char* modifier_name}. List2 = blocking
+  modifiers.
+- RTTI works on this binary: *(vtable-8) → COL, u32 at COL+0xc = TypeDescriptor
+  RVA, name string at TD+0x10 (".?AV<name>@@"). Fastest way to identify any
+  object: read its vtable, resolve the class name.
+- `cycle_runs.py N` (repo root) cycles N runs and logs each trio as JSON
+  lines — used for the slot statistics; reads are flaky during loading
+  screens (~30% null), just take more samples.
 
 ## .tpi texture format (SOLVED)
 
