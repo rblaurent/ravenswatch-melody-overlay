@@ -73,6 +73,35 @@ context is null or its +0x760 slots don't match any known melody GUID.
 finds which MelodyEntityCpnt it references, then follows the name chain
 `cpnt+0x08 → entity+0x28 → B+0x70 → C+0x48 → D+0x18 → name string`.
 
+### Known issue: completed LAST melody stays "active" (investigated 2026-06-11, unfixed)
+The overlay hides slots before the active one, but when melody 3 completes it
+never disappears: ACTIVE = last element of the hero's linked array, and nothing
+links after slot 3, so it reads "active" forever. (Slots 1/2 only hide because
+linking melody N+1 advances the array — completion itself is never read. If
+linking lags completion, slots 1/2 can also linger briefly.) The fix needs a
+"current melody completed" signal; not yet found. Live findings so far:
+
+- HeroMelodyPersistentData records (vtable 0xf0dc20) are created when a melody
+  LINKS (run start, 0 notes collected) and are all destroyed on run end —
+  run-scoped link records, useless for completion.
+- The spawned active cpnt shows `+0x64=8 +0x68=1 +0x6c=0` and `+0xc8=1 +0xcc=8`
+  at 0 notes. The `(n, 8)` pairs look like {count, capacity=8} array headers
+  (the MelodyUiViewer is full of them; their counts zero out on run end).
+- MelodyUiViewerEntityCpnt holds the active cpnt pointer at +0x68; it clears
+  when the run ends. Whether it also clears when melody 3 completes MID-RUN is
+  the key unverified question — if yes, "viewer ref gone while in a run" =
+  all melodies done.
+- The HUD "0/N" current-note counter was not located (all candidate fields are
+  0 at run start; needs a dump with notes collected).
+
+Missing observation: cpnt/viewer state while notes are collected and right
+after melody 3 completes. `scratch/watch_completion.py` (local, gitignored)
+logs all state changes to `scratch/completion_log.jsonl` during normal play —
+run it during a real session, then diff the lines around each completion.
+
+Fix sketch once the signal is known: in `read_run_info()`, when the last-linked
+melody reads as completed, report it so the overlay can hide all slots.
+
 ### Dead ends (kept for the record)
 - MelodyEntityCpntSettings slot reading (names don't resolve reliably)
 - MelodyDefinition 3-vs-9 split scanning (no clean split found)
