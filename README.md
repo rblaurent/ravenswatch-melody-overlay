@@ -41,8 +41,12 @@ In the screenshot above, the run rolled (left to right = unlock order):
 2. **Otohime** — red = 6 notes
 3. **Hansel & Gretel** — orange = 5 notes
 
-Color is the note cost: **green = 4, orange = 5, red = 6**. The overlay fades in
-over the melody staff at the bottom-right of the HUD, only while you're in a run:
+Color is the note cost: **green = 4, orange = 5, red = 6**. As you unlock
+melodies, the game's own HUD starts showing them on the staff — the overlay
+hides those slots and only ever draws what the game still hides.
+
+The overlay fades in over the melody staff at the bottom-right of the HUD, only
+while you're in a run:
 
 ![where it appears on the HUD](hud-location.png)
 

@@ -251,9 +251,20 @@ class MelodyOverlay:
         width = dot_xs[-1] - dot_xs[0] + col_w
         centers = [x - dot_xs[0] + half for x in dot_xs]
 
+        # slots before the active one are unlocked: the game HUD itself shows
+        # them on the staff, so the overlay must not draw on top of them
+        active_idx = 0
+        if active is not None:
+            for i, m in enumerate(melodies):
+                if m.internal_name == active.internal_name:
+                    active_idx = i
+                    break
+
         img = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        for m, cx in zip(melodies, centers):
+        for slot, (m, cx) in enumerate(zip(melodies, centers)):
+            if slot < active_idx:
+                continue
             color = NOTE_COLORS.get(m.notes, (255, 255, 255))
             is_active = active is not None and m.internal_name == active.internal_name
 
