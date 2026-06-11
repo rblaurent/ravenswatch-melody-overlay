@@ -141,6 +141,17 @@ The overlay window is a native layered click-through topmost window — it never
 steals focus or mouse input and works over borderless fullscreen. Text/icons
 scale with the game window height (tuned at 2160p).
 
+### Publishing to players
+Public downloads live at https://github.com/rblaurent/ravenswatch-melody-overlay
+(release-only repo: player README + exe release assets — this source repo is
+intentionally local-only, the RE notes are not published). To ship a new version:
+```bash
+python build.py
+gh release create vX.Y.Z dist/RavenswatchOverlay.exe --repo rblaurent/ravenswatch-melody-overlay --title vX.Y.Z --notes "..."
+```
+Stable download link for Discord etc.:
+https://github.com/rblaurent/ravenswatch-melody-overlay/releases/latest
+
 ### OBS browser source (for streams)
 ```bash
 python -m ravenswatch serve [--port 18904] [--host 127.0.0.1]
