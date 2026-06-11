@@ -1,4 +1,9 @@
-"""Batch-convert DarkTales .tpi melody icons to PNG with deciphered names."""
+"""Batch-convert DarkTales .tpi melody icons to PNG with deciphered names.
+
+Usage: python tpi_batch.py [path-to-cooked-melody-dir]
+Writes PNGs to icons/ next to this script.
+"""
+import sys
 from pathlib import Path
 
 from tpi_decode import decode_tpi
@@ -30,9 +35,10 @@ def decipher(name):
             out.append(ch)
     return ''.join(out)
 
-SRC = Path(r"G:\SteamLibrary\steamapps\common\Ravenswatch\DarkTalesResources\_Cooking\Jd\Hqlrtdqv")
-OUT = Path(r"T:\Projects\gdq\ravenswatch\icons")
-TEMP = Path(r"T:\Projects\nova\nova-workspace\memory\temp")
+# "Hqlrtdqv" = "Melodies" in the cooked-name cipher
+DEFAULT_SRC = Path(r"G:\SteamLibrary\steamapps\common\Ravenswatch\DarkTalesResources\_Cooking\Jd\Hqlrtdqv")
+SRC = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_SRC
+OUT = Path(__file__).resolve().parent / "icons"
 OUT.mkdir(exist_ok=True)
 
 for f in sorted(SRC.glob("*.tpi")):
@@ -41,5 +47,4 @@ for f in sorted(SRC.glob("*.tpi")):
     base = plain.split('.')[0] + ".png"
     img = decode_tpi(f)
     img.save(OUT / base)
-    img.save(TEMP / base)
     print(f"{f.name}  ->  {base}  {img.size}")

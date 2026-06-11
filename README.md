@@ -24,6 +24,27 @@ missing. With the overlay, you know instantly:
 > Run starts → trio contains a Melody you're missing → **play it out.**
 > Nothing new → **abandon and reroll.** Ten seconds per check instead of an hour.
 
+### The real bottleneck: The Little Tailor
+
+Eleven of the twelve Melodies move freely between the three slots. **The Little
+Tailor** (5 notes — keeps consumables coming past max level) does not: it
+**only ever appears as the third Melody**, the one you don't collect until
+Chapter 3 (community reports and our own run sampling agree). That makes it the
+melody most *Symphony of Reverie* hunts die on:
+
+- A melody that can roll in any slot is in a given run ~3/12 = **25%** of the
+  time. The Little Tailor competes for a single slot: ~1/12 ≈ **8%** of runs
+  (assuming roughly uniform slot rolls).
+- Expect **~12 runs on average** (median 8) before it shows up at all — and
+  after 20 runs there's still a (11/12)²⁰ ≈ **17% chance you've never seen it**.
+- Without the overlay, the only way to check a run is to fight all the way to
+  the third Melody in Chapter 3. Every check costs you most of a run.
+- It's also removed from the pool entirely in Single Chapter mode, so you
+  can't shortcut the grind with short custom runs.
+
+With the overlay, the same check costs ten seconds in Chapter 1: start the run,
+glance at slot 3, reroll until the Tailor is there — then commit and play it out.
+
 ### Seed hunting & tool-assisted runs
 
 The Melody trio is part of the run seed. If you're hunting a specific setup —
