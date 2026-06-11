@@ -75,3 +75,40 @@ Grab `RavenswatchOverlay.exe` from the **[latest release](../../releases/latest)
 - **Fair-play note:** this reveals information the game intentionally hides.
   Fine for achievement grinding, seed hunting, and tool-assisted/showcase
   content — your call whether it belongs in unassisted runs.
+
+---
+
+## Source & building it yourself
+
+This repo is the full source ([MIT](LICENSE)). The overlay is part of a small
+seed-hunting toolkit:
+
+| Path | What it is |
+|------|------------|
+| `ravenswatch/overlay.py` | The overlay: native layered click-through win32 window (per-pixel alpha, no GUI toolkit) |
+| `ravenswatch/memory.py` | Reads the run's 3 melody GUIDs from game memory — how it works is documented in [CLAUDE.md](CLAUDE.md) |
+| `ravenswatch/server.py` | Same overlay as an OBS Browser Source (`python -m ravenswatch serve`, port 18904) — for streams |
+| `ravenswatch/flow.py`, `cli.py` | Run-cycling automation (start/abandon runs) for hands-free seed hunting |
+| `tpi_decode.py`, `tpi_batch.py` | Decoder for the game's `.tpi` texture format — how `icons/` was extracted |
+
+### Build the exe
+
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python build.py        # → dist/RavenswatchOverlay.exe
+```
+
+### Run from source
+
+```bash
+python -m ravenswatch overlay     # the overlay, no exe needed
+python -m ravenswatch melodies    # print the run's melody trio as JSON
+python -m ravenswatch serve       # OBS browser source at http://localhost:18904
+```
+
+Requires Python 3.11+ on Windows. Memory detection is tied to the current Steam
+build — when a game patch moves things around, the RVAs in `memory.py` need
+re-finding (the hunt is written up in CLAUDE.md).
+
+The melody icons in `icons/` are decoded from game assets and remain Passtech
+Games' property — included only so the overlay can show in-game iconography.
