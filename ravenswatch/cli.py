@@ -10,6 +10,7 @@ Usage:
     python -m ravenswatch click-rel RX RY Click at relative coords (0.0-1.0)
     python -m ravenswatch key KEYNAME     Press a key (escape, enter, space)
     python -m ravenswatch melodies        Read current melodies from memory
+    python -m ravenswatch serve           OBS browser-source overlay server (port 18904)
     python -m ravenswatch focus           Bring game window to front
     python -m ravenswatch size            Print window dimensions
     python -m ravenswatch start-run       Start a run from the lobby (click PRÊT)
@@ -55,6 +56,11 @@ def main():
 
     sub.add_parser("melodies", help="Read current melodies from memory")
     sub.add_parser("overlay", help="Launch the live melody overlay window")
+
+    p_serve = sub.add_parser("serve", help="Serve the OBS browser-source overlay over HTTP")
+    p_serve.add_argument("--port", type=int, default=18904, help="HTTP port (default 18904)")
+    p_serve.add_argument("--host", default="127.0.0.1",
+                         help="Bind address (use 0.0.0.0 to allow other machines)")
 
     p_start = sub.add_parser("start-run", help="Start a run from the lobby (click PRÊT)")
     p_start.add_argument("--screenshots", action="store_true", help="Save screenshots at each step")
@@ -153,6 +159,10 @@ def main():
     elif args.command == "overlay":
         from .overlay import MelodyOverlay
         MelodyOverlay().run()
+
+    elif args.command == "serve":
+        from .server import serve
+        serve(port=args.port, host=args.host)
 
     elif args.command == "start-run":
         ok = start_run(gc, screenshots=args.screenshots)

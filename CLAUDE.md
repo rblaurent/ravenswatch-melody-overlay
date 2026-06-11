@@ -13,7 +13,11 @@ This project contains only tools and scripts, not the game itself.
 - `ravenswatch/controller.py` — Screenshot, click, keyboard input relative to game window
 - `ravenswatch/flow.py` — Game flow automation: start runs, abandon runs, navigate menus
 - `ravenswatch/memory.py` — Read melody data from game process memory (reverse-engineered offsets)
-- `ravenswatch/melody_data.py` — All 12 melody definitions with note counts and effects
+- `ravenswatch/melody_data.py` — All 12 melody definitions with note counts, effects, icon filenames
+- `ravenswatch/overlay.py` — In-game melody overlay: native layered click-through win32 window
+  (UpdateLayeredWindow, per-pixel alpha, frames composed with Pillow — no GUI toolkit)
+- `ravenswatch/server.py` — OBS browser-source HTTP server (stdlib http.server, port 18904)
+- `ravenswatch/resources.py` — Icon path resolution, works in dev and PyInstaller-frozen mode
 - `ravenswatch/cli.py` — CLI interface for all operations
 
 ## Usage
@@ -27,6 +31,7 @@ python -m ravenswatch click-rel 0.5 0.5  # Click at relative position
 python -m ravenswatch key escape      # Press ESC
 python -m ravenswatch melodies        # Read all 3 run melodies (+ active) from memory
 python -m ravenswatch overlay         # Live overlay: 3 melody icons over the HUD staff dots
+python -m ravenswatch serve           # OBS browser source at http://localhost:18904
 python -m ravenswatch start-run       # From lobby: click PRÊT, wait for loading
 python -m ravenswatch restart         # From in-game: abandon run, return to lobby
 python -m ravenswatch restart --start # Abandon + immediately start a new run
@@ -118,11 +123,40 @@ Godmother, Turtle=Tortoise, LadyLake, Galahad, MerryMen, Goose=Goose Girl,
 Hansel=Hansel & Gretel, Tailor=Little Tailor, LuckyHans, OtoHime, LongJohnSilver,
 Sherazade=Sheherazad (plus UI extras: Hover, bg, Locked, Locked_bg).
 
+## Distribution
+
+### Standalone overlay exe (for runners — no Python needed)
+```bash
+pip install -r requirements.txt -r requirements-dev.txt
+python build.py            # → dist/RavenswatchOverlay.exe (~17 MB, onefile)
+python build.py --debug    # also builds a console/no-UAC debug exe for testing
+```
+Double-click the exe → UAC prompt (memory reading) → it waits for the game,
+shows melodies during runs, hides in the lobby, and exits when the game closes.
+A toast at startup confirms it's running. Build config: `RavenswatchOverlay.spec`
+(bundles `icons/`, UAC manifest `requireAdministrator`, exe icon generated from
+the Fairy Godmother PNG by `build.py`).
+
+The overlay window is a native layered click-through topmost window — it never
+steals focus or mouse input and works over borderless fullscreen. Text/icons
+scale with the game window height (tuned at 2160p).
+
+### OBS browser source (for streams)
+```bash
+python -m ravenswatch serve [--port 18904] [--host 127.0.0.1]
+```
+Add `http://localhost:18904` as an OBS Browser Source (suggested 900x320).
+Transparent background; icons, note-count color coding (green=4, orange=5,
+red=6), active melody pulses. Page polls `/data` every 2 s; a background
+thread reads memory every 3 s so HTTP requests never trigger memory scans.
+Endpoints: `/` (page), `/data` (JSON), `/icons/<png>` (whitelisted).
+
 ## Dependencies
-- Python 3.12+
-- `mss` for screenshots
+- Python 3.11+
+- `mss` for screenshots, `Pillow` for icons/overlay rendering (requirements.txt)
+- `pyinstaller` for building the exe (requirements-dev.txt)
 - Windows only (ctypes win32 APIs)
-- Admin required for memory reading
+- Admin required for memory reading (UAC manifest on the exe handles this)
 
 ## Game flow (for AI agents)
 

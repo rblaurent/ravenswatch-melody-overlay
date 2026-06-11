@@ -26,6 +26,22 @@ ALL_MELODIES = [
     Melody("Refill_Sandman_Dreams", "Sheherazad", 6, "Sandman dreams restock"),
 ]
 
+# Icon PNG filenames (in icons/) keyed by display name
+ICON_FILENAMES = {
+    "Fairy Godmother": "UI_Melody_Icon_Godfairy.png",
+    "Tortoise": "UI_Melody_Icon_Turtle.png",
+    "Lady of the Lake": "UI_Melody_Icon_LadyLake.png",
+    "Galahad": "UI_Melody_Icon_Galahad.png",
+    "Merry Men": "UI_Melody_Icon_MerryMen.png",
+    "Goose Girl": "UI_Melody_Icon_Goose.png",
+    "Hansel & Gretel": "UI_Melody_Icon_Hansel.png",
+    "Little Tailor": "UI_Melody_Icon_Tailor.png",
+    "Lucky Hans": "UI_Melody_Icon_LuckyHans.png",
+    "Otohime": "UI_Melody_Icon_OtoHime.png",
+    "Long John Silver": "UI_Melody_Icon_LongJohnSilver.png",
+    "Sheherazad": "UI_Melody_Icon_Sherazade.png",
+}
+
 BY_INTERNAL_NAME = {m.internal_name.lower(): m for m in ALL_MELODIES}
 BY_NOTE_COUNT = {}
 for m in ALL_MELODIES:
