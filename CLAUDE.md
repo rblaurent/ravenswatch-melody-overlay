@@ -25,7 +25,8 @@ python -m ravenswatch screenshot name # Capture with a specific filename
 python -m ravenswatch click 500 300   # Click at window coords
 python -m ravenswatch click-rel 0.5 0.5  # Click at relative position
 python -m ravenswatch key escape      # Press ESC
-python -m ravenswatch melodies        # Read melodies from memory
+python -m ravenswatch melodies        # Read all 3 run melodies (+ active) from memory
+python -m ravenswatch overlay         # Live overlay: 3 melody icons over the HUD staff dots
 python -m ravenswatch start-run       # From lobby: click PRÊT, wait for loading
 python -m ravenswatch restart         # From in-game: abandon run, return to lobby
 python -m ravenswatch restart --start # Abandon + immediately start a new run
@@ -35,27 +36,57 @@ Add `--screenshots` to `start-run` or `restart` to save a screenshot at each ste
 
 All commands output JSON for easy parsing by AI tools.
 
-## Melody detection (game version dependent!)
+## Melody detection (game version dependent!) — SOLVED, all 3 melodies
 
-### What works: active melody detection
-`python -m ravenswatch melodies` identifies the melody currently being unlocked (the one
-shown in the HUD with a "0/N" counter). It uses the MelodyUiViewerEntityCpnt (vtable RVA
-0xf295a0), finds which MelodyEntityCpnt it references, then follows a pointer chain to
-extract the internal resource name.
+`python -m ravenswatch melodies` returns ALL THREE run melodies in unlock order
+(slot 1 = first/active at run start) plus which one is currently active. Returns
+`melodies: null` when in the lobby / not in a run.
 
-Pointer chain: `cpnt+0x08 → entity+0x28 → B+0x70 → C+0x48 → D+0x18 → name string`
+### How all-3 detection works (`MemoryReader.read_run_info()`)
+The hero controller's scene context stores the run's predetermined melody asset
+GUIDs in three consecutive 16-byte slots:
 
-This gives us ONE melody per run. We cannot yet read all three run melodies from memory.
+```
+hero    = vtable scan for RVA 0xf2b930 (2 pooled instances; one per player)
+context = *(*(hero+0x08) + 0x30)        # null when that hero isn't in a run
+guids   = context+0x760 .. +0x78f       # 3 x 16-byte melody asset GUIDs, unlock order
+```
 
-### What doesn't work (yet)
+GUIDs resolve to melodies via the static registry of the 12 base MelodyEntityCpnt
+instances at module RVA 0x14388c8 (`{cpnt** buffer, u32 count}` — no scan needed).
+Each base cpnt → entity (+0x08) → B object (+0x28); B carries the asset GUID at
+B+0x1c8 and the name chain `B+0x70 → C+0x48 → D+0x18 → path string` (e.g.
+`...\Grant_Damage_Overtime.entity.ot`).
+
+The ACTIVE melody is the last element of the hero's linked-melody array at
+hero+0x13a0 (`{cpnt** buffer}`, u32 count at +0x13a8). The game links melodies
+one at a time as they become active, so count starts at 1. Lobby detection:
+context is null or its +0x760 slots don't match any known melody GUID.
+
+### Active-only detection (legacy, still works)
+`read_active_melody()` uses the MelodyUiViewerEntityCpnt (vtable RVA 0xf295a0),
+finds which MelodyEntityCpnt it references, then follows the name chain
+`cpnt+0x08 → entity+0x28 → B+0x70 → C+0x48 → D+0x18 → name string`.
+
+### Dead ends (kept for the record)
 - MelodyEntityCpntSettings slot reading (names don't resolve reliably)
 - MelodyDefinition 3-vs-9 split scanning (no clean split found)
-- Reference counting across definitions (all show equal refs)
+- "Live trio" via spawned cpnt +0x64/+0x6c fields: FALSE LEAD — spawned cpnt
+  instances are pooled per melody and those fields linger after a run ends.
+  Spawned entities are also created lazily (melody 2/3 may not exist early on).
+- Hero+0x13a0 array never holds all 3: melodies are linked one at a time.
+- Scene data melody list (sceneData+0xc8/+0xd0, vtable RVA 0xf05958) and
+  HeroMelodyPersistentData records (vtable RVA 0xf0dc20): only contain melodies
+  already linked, not the full predetermined trio.
 
-### Key vtable RVAs
-- MelodyUiViewerEntityCpnt: 0xf295a0 (the one that works)
-- MelodyEntityCpnt: 0xed2320
-- MelodyEntityCpntSettings: 0xf1d048
+### Key RVAs (Ravenswatch.exe, current Steam build)
+- Hero controller vtable: 0xf2b930 (melody array +0x13a0, count +0x13a8)
+- Base MelodyEntityCpnt registry (static data): 0x14388c8
+- MelodyUiViewerEntityCpnt vtable: 0xf295a0
+- MelodyEntityCpnt vtable: 0xed2320
+- MelodyEntityCpntSettings vtable: 0xf1d048
+- HeroMelodyPersistentData vtable: 0xf0dc20 (0x20-byte inline records:
+  {vtable, guid_lo, guid_hi, P}; P+0x18 → B)
 
 ### All 12 melodies
 - 4 notes: Fairy Godmother, Tortoise, Lady of the Lake, Galahad

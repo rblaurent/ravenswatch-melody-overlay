@@ -1,16 +1,31 @@
 """
 Memory reader for Ravenswatch process.
 
-Reads the currently-active melody from game memory using the MelodyUiViewerEntityCpnt,
-which is the UI component that displays melody progress in the HUD (the "0/N" counter).
+Two detection paths:
 
-The approach: find the UiViewer via vtable scan, then scan its fields for pointers
-to MelodyEntityCpnt instances. The one it references is the melody being unlocked.
-We follow a pointer chain from the MelodyEntityCpnt to extract the internal name,
-then map it to our melody data.
+1. Active melody (the HUD "0/N" counter): find the MelodyUiViewerEntityCpnt via
+   vtable scan, then scan its fields for pointers to MelodyEntityCpnt instances.
+   The one it references is the melody being unlocked. We follow a pointer chain
+   from the MelodyEntityCpnt to extract the internal name.
 
-This reliably identifies ONE melody per run: the one currently being built toward.
-We have not yet found a way to read all three run melodies from memory.
+2. ALL THREE run melodies: the hero controller's scene context stores the run's
+   predetermined melody asset GUIDs in three 16-byte slots at context+0x760
+   (slot order = unlock order; slot 0 is the first/active melody at run start).
+   GUIDs are resolved to melodies through the static registry of the 12 base
+   MelodyEntityCpnt instances (module RVA 0x14388c8): each base cpnt leads to a
+   per-melody "B" object (cpnt+0x08 -> entity+0x28) which carries both the asset
+   GUID (B+0x1c8) and the name chain (B+0x70 -> C+0x48 -> D+0x18 -> path string).
+
+   Chain summary:
+     hero      = vtable scan, RVA 0xf2b930 (one instance per player; pooled)
+     context   = *(*(hero+0x08) + 0x30)   (null when not in a run)
+     guids     = context+0x760, 3 x 16 bytes
+     active    = last element of the hero's linked-melody array at hero+0x13a0
+                 (count u32 at +0x13a8; the game links melodies one at a time
+                 as they become active, so the array starts at count=1)
+
+   When not in a run the context is null or its slots hold garbage that does not
+   match any known melody GUID, which is how we detect "no run".
 """
 
 import ctypes
@@ -24,6 +39,11 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 UI_VIEWER_VTABLE_RVA = 0xf295a0
 CPNT_VTABLE_RVA = 0xed2320
+HERO_VTABLE_RVA = 0xf2b930
+BASE_CPNT_REGISTRY_RVA = 0x14388c8  # static {MelodyEntityCpnt** buf, u32 count} of the 12 base instances
+CTX_MELODY_SLOTS_OFFSET = 0x760     # 3 x 16-byte melody GUIDs in the hero's scene context
+B_GUID_OFFSET = 0x1c8               # melody asset GUID inside the B object
+HERO_MELODY_ARRAY_OFFSET = 0x13a0   # {MelodyEntityCpnt** buf} at +0x13a0, u32 count at +0x13a8
 
 MEM_COMMIT = 0x1000
 WRITABLE_PROTECTIONS = {0x04, 0x40, 0x08, 0x80}
@@ -104,20 +124,14 @@ def _scan_for_pointer(handle, target: int) -> list[int]:
     return found
 
 
-def _follow_melody_name(handle, cpnt_addr: int) -> str | None:
-    """Follow the pointer chain from a MelodyEntityCpnt to its internal name.
+def _resolve_b_name(handle, b_addr: int) -> str | None:
+    """Resolve a melody name from its B object.
 
-    Chain: cpnt+0x08 -> entity+0x28 -> B+0x70 -> C+0x48 -> D+0x18 -> name string.
+    Chain: B+0x70 -> C+0x48 -> D+0x18 -> name string.
     The name looks like a path ending in e.g. "Grant_Damage_Overtime.entity.ot".
     We strip the path prefix and .entity.ot suffix.
     """
-    entity = _read_ptr(handle, cpnt_addr + 0x08)
-    if not entity:
-        return None
-    b = _read_ptr(handle, entity + 0x28)
-    if not b:
-        return None
-    c = _read_ptr(handle, b + 0x70)
+    c = _read_ptr(handle, b_addr + 0x70)
     if not c:
         return None
     d = _read_ptr(handle, c + 0x48)
@@ -130,6 +144,20 @@ def _follow_melody_name(handle, cpnt_addr: int) -> str | None:
     if name and '\\' in name:
         name = name.rsplit('\\', 1)[-1].replace('.entity.ot', '')
     return name
+
+
+def _follow_melody_name(handle, cpnt_addr: int) -> str | None:
+    """Follow the pointer chain from a MelodyEntityCpnt to its internal name.
+
+    Chain: cpnt+0x08 -> entity+0x28 -> B, then the B name chain.
+    """
+    entity = _read_ptr(handle, cpnt_addr + 0x08)
+    if not entity:
+        return None
+    b = _read_ptr(handle, entity + 0x28)
+    if not b:
+        return None
+    return _resolve_b_name(handle, b)
 
 
 class MemoryReader:
@@ -205,6 +233,80 @@ class MemoryReader:
                         if melody:
                             return melody
         return None
+
+    def _melody_guid_map(self) -> dict[bytes, Melody]:
+        """Build the {16-byte asset GUID: Melody} map from the static registry
+        of the 12 base MelodyEntityCpnt instances. No memory scan needed."""
+        h = self._handle
+        guid_map = {}
+        reg_buf = _read_ptr(h, self._base + BASE_CPNT_REGISTRY_RVA)
+        cnt_data = _read_mem(h, self._base + BASE_CPNT_REGISTRY_RVA + 8, 4)
+        if not reg_buf or not cnt_data:
+            return guid_map
+        count = struct.unpack('<I', cnt_data)[0]
+        if not 0 < count <= 16:
+            return guid_map
+        buf = _read_mem(h, reg_buf, count * 8)
+        if not buf or len(buf) < count * 8:
+            return guid_map
+        for i in range(count):
+            cpnt = struct.unpack_from('<Q', buf, i * 8)[0]
+            entity = _read_ptr(h, cpnt + 0x08) if cpnt else None
+            b = _read_ptr(h, entity + 0x28) if entity else None
+            if not b:
+                continue
+            guid = _read_mem(h, b + B_GUID_OFFSET, 16)
+            name = _resolve_b_name(h, b)
+            melody = identify(name) if name else None
+            if guid and len(guid) == 16 and melody:
+                guid_map[bytes(guid)] = melody
+        return guid_map
+
+    def read_run_info(self) -> tuple[list[Melody], Melody | None] | None:
+        """Read all three melodies of the current run, plus the active one.
+
+        Returns ([melody1, melody2, melody3] in unlock order, active) or None
+        if not in a run. The active melody comes from the hero's linked-melody
+        array and may be None right at run start before linking completes.
+        """
+        if not self.connected and not self.connect():
+            return None
+        h = self._handle
+
+        guid_map = self._melody_guid_map()
+        if len(guid_map) < 3:
+            return None
+
+        for hero in _scan_for_pointer(h, self._base + HERO_VTABLE_RVA):
+            entity = _read_ptr(h, hero + 0x08)
+            ctx = _read_ptr(h, entity + 0x30) if entity else None
+            if not ctx:
+                continue
+            slots = _read_mem(h, ctx + CTX_MELODY_SLOTS_OFFSET, 48)
+            if not slots or len(slots) < 48:
+                continue
+            melodies = [guid_map.get(bytes(slots[k * 16:(k + 1) * 16])) for k in range(3)]
+            if None in melodies:
+                continue  # lobby/stale context: slots don't hold melody GUIDs
+
+            active = None
+            arr = _read_mem(h, hero + HERO_MELODY_ARRAY_OFFSET, 12)
+            if arr and len(arr) == 12:
+                arr_ptr, arr_cnt = struct.unpack('<QI', arr)
+                if arr_ptr and 0 < arr_cnt <= 8:
+                    elements = _read_mem(h, arr_ptr, arr_cnt * 8)
+                    if elements and len(elements) == arr_cnt * 8:
+                        # melodies are linked in unlock order; last = current
+                        last = struct.unpack_from('<Q', elements, (arr_cnt - 1) * 8)[0]
+                        name = _follow_melody_name(h, last) if last else None
+                        active = identify(name) if name else None
+            return (melodies, active)
+        return None
+
+    def read_all_melodies(self) -> list[Melody] | None:
+        """Read all three run melodies in unlock order. None if not in a run."""
+        info = self.read_run_info()
+        return info[0] if info else None
 
     def read_active_melody_with_slot(self) -> tuple[Melody, int] | None:
         """Like read_active_melody but also returns the active slot index (0-2).

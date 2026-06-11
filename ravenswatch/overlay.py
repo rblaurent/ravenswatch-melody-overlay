@@ -1,6 +1,8 @@
 """
-Live overlay showing the melody currently being unlocked.
-Transparent window positioned over the correct dot on the game's music staff.
+Live overlay showing the three melodies of the current run.
+Transparent window positioned over the music staff in the game's HUD,
+one faded icon + name above each of the three staff dots (unlock order).
+The currently-active melody's name is underlined.
 """
 
 import threading
@@ -31,40 +33,42 @@ ICON_FILENAMES = {
     "Sheherazad": "UI_Melody_Icon_Sherazade.png",
 }
 
-STAFF_DOTS_RX = [0.749, 0.789, 0.829]
+STAFF_DOTS_RX = [0.749, 0.778, 0.810]
 STAFF_DOT_RY = 0.912
 
 NOTE_COLORS = {4: "#16c79a", 5: "#f5a623", 6: "#e94560"}
 REFRESH_INTERVAL = 4
 ICON_SIZE = 56
+COLUMN_WIDTH = 160
+WINDOW_HEIGHT = 80
 TRANSP_COLOR = "#010101"
+
+FONT = ("Segoe UI", 10, "bold")
+FONT_ACTIVE = ("Segoe UI", 10, "bold underline")
 
 
 class MelodyOverlay:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Melody")
+        self.root.title("Melodies")
         self.root.overrideredirect(True)
         self.root.attributes("-topmost", True)
         self.root.configure(bg=TRANSP_COLOR)
         self.root.attributes("-transparentcolor", TRANSP_COLOR)
-        self.root.attributes("-alpha", 0.5)
+        self.root.attributes("-alpha", 0.3)
 
         self._icon_cache = {}
-        self._current_photo = None
         self._game_rect = None
 
-        self.name_label = tk.Label(
-            self.root, text="",
-            font=("Segoe UI", 10, "bold"), fg="#fff", bg=TRANSP_COLOR,
-        )
-        self.name_label.pack(pady=(0, 2))
-
-        self.icon_label = tk.Label(self.root, bg=TRANSP_COLOR, bd=0)
-        self.icon_label.pack()
+        # one column (name above icon) per staff dot, placed by pixel offset
+        self._columns = []
+        for _ in range(3):
+            name = tk.Label(self.root, text="", font=FONT, fg="#fff", bg=TRANSP_COLOR)
+            icon = tk.Label(self.root, bg=TRANSP_COLOR, bd=0)
+            self._columns.append({"name": name, "icon": icon, "photo": None})
 
         self._update_game_rect()
-        self._position_on_dot(0)
+        self._position_window()
 
         self._reader = MemoryReader()
         self._running = True
@@ -76,20 +80,25 @@ class MelodyOverlay:
         if hwnd:
             self._game_rect = process.get_window_rect(hwnd)
 
-    def _position_on_dot(self, slot: int):
+    def _position_window(self) -> list[int] | None:
+        """Size/position the window over the three staff dots.
+
+        Returns the x pixel centers of the three dots within the window,
+        or None if the game window is unknown.
+        """
         if not self._game_rect:
-            self.root.geometry("160x80+100+100")
-            return
+            self.root.geometry(f"480x{WINDOW_HEIGHT}+100+100")
+            return None
         left, top, right, bottom = self._game_rect
         w = right - left
         h = bottom - top
-        rx = STAFF_DOTS_RX[min(slot, 2)]
-        ry = STAFF_DOT_RY
-        cx = left + int(w * rx)
-        cy = top + int(h * ry)
-        ox = cx - 80
-        oy = cy - 75
-        self.root.geometry(f"160x80+{ox}+{oy}")
+        dot_xs = [int(w * rx) for rx in STAFF_DOTS_RX]
+        half = COLUMN_WIDTH // 2
+        ox = left + dot_xs[0] - half
+        oy = top + int(h * STAFF_DOT_RY) - 75
+        width = dot_xs[-1] - dot_xs[0] + COLUMN_WIDTH
+        self.root.geometry(f"{width}x{WINDOW_HEIGHT}+{ox}+{oy}")
+        return [x - dot_xs[0] + half for x in dot_xs]
 
     def _load_icon(self, melody_name: str):
         if melody_name in self._icon_cache:
@@ -113,24 +122,31 @@ class MelodyOverlay:
         while self._running:
             try:
                 self._update_game_rect()
-                result = self._reader.read_active_melody_with_slot()
-                if result:
-                    melody, slot = result
-                    self.root.after(0, lambda m=melody, s=slot: self._show(m, s))
+                info = self._reader.read_run_info()
+                if info:
+                    melodies, active = info
+                    self.root.after(0, lambda ms=melodies, a=active: self._show(ms, a))
                 else:
                     self.root.after(0, self._hide)
             except Exception:
                 self.root.after(0, self._hide)
             time.sleep(REFRESH_INTERVAL)
 
-    def _show(self, m: Melody, slot: int):
-        color = NOTE_COLORS.get(m.notes, "#fff")
-        photo = self._load_icon(m.display_name)
-        if photo:
-            self._current_photo = photo
-            self.icon_label.config(image=photo)
-        self.name_label.config(text=m.display_name, fg=color)
-        self._position_on_dot(slot)
+    def _show(self, melodies: list[Melody], active: Melody | None):
+        centers = self._position_window()
+        if not centers:
+            return
+        for m, cx, col in zip(melodies, centers, self._columns):
+            color = NOTE_COLORS.get(m.notes, "#fff")
+            is_active = active is not None and m.internal_name == active.internal_name
+            photo = self._load_icon(m.display_name)
+            if photo:
+                col["photo"] = photo
+                col["icon"].config(image=photo)
+            col["name"].config(text=m.display_name, fg=color,
+                               font=FONT_ACTIVE if is_active else FONT)
+            col["name"].place(x=cx, y=0, anchor="n")
+            col["icon"].place(x=cx, y=20, anchor="n")
         self.root.deiconify()
 
     def _hide(self):

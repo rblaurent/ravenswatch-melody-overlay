@@ -121,17 +121,34 @@ def main():
         if not reader.connect():
             print(json.dumps({"error": "Cannot connect to game process. Is it running? Run as admin?"}))
             sys.exit(1)
-        melody = reader.read_active_melody()
+        info = reader.read_run_info()
+        active = info[1] if info else None
+        if active is None:
+            active = reader.read_active_melody()
         reader.disconnect()
-        if melody:
-            print(json.dumps({
-                "active_melody": melody.display_name,
-                "internal_name": melody.internal_name,
-                "notes": melody.notes,
-                "effect": melody.effect,
-            }, indent=2))
-        else:
-            print(json.dumps({"active_melody": None, "error": "Not in a run or melody not detected"}))
+
+        out = {"melodies": None, "active_melody": None}
+        if info:
+            melodies, _ = info
+            out["melodies"] = [
+                {
+                    "slot": i + 1,
+                    "name": m.display_name,
+                    "internal_name": m.internal_name,
+                    "notes": m.notes,
+                    "effect": m.effect,
+                    "active": active is not None and m.internal_name == active.internal_name,
+                }
+                for i, m in enumerate(melodies)
+            ]
+        if active:
+            out["active_melody"] = active.display_name
+            out["internal_name"] = active.internal_name
+            out["notes"] = active.notes
+            out["effect"] = active.effect
+        if not info and not active:
+            out["error"] = "Not in a run or melodies not detected"
+        print(json.dumps(out, indent=2))
 
     elif args.command == "overlay":
         from .overlay import MelodyOverlay
