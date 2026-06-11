@@ -142,9 +142,9 @@ steals focus or mouse input and works over borderless fullscreen. Text/icons
 scale with the game window height (tuned at 2160p).
 
 ### Publishing to players
-Public downloads live at https://github.com/rblaurent/ravenswatch-melody-overlay
-(release-only repo: player README + exe release assets — this source repo is
-intentionally local-only, the RE notes are not published). To ship a new version:
+Public repo: https://github.com/rblaurent/ravenswatch-melody-overlay — full
+source (this repo pushes there as `origin`) + player README + exe release
+assets. To ship a new version:
 ```bash
 python build.py
 gh release create vX.Y.Z dist/RavenswatchOverlay.exe --repo rblaurent/ravenswatch-melody-overlay --title vX.Y.Z --notes "..."
