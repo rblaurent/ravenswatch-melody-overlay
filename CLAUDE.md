@@ -216,13 +216,14 @@ Sherazade=Sheherazad (plus UI extras: Hover, bg, Locked, Locked_bg).
 ```bash
 pip install -r requirements.txt -r requirements-dev.txt
 python build.py            # → dist/RavenswatchOverlay.exe (~17 MB, onefile)
-python build.py --debug    # also builds a console/no-UAC debug exe for testing
+python build.py --debug    # also builds a console debug exe for testing
 ```
-Double-click the exe → UAC prompt (memory reading) → it waits for the game,
-shows melodies during runs, hides in the lobby, and exits when the game closes.
-A toast at startup confirms it's running. Build config: `RavenswatchOverlay.spec`
-(bundles `icons/`, UAC manifest `requireAdministrator`, exe icon generated from
-the Fairy Godmother PNG by `build.py`).
+Double-click the exe → it waits for the game, shows melodies during runs,
+hides in the lobby, and exits when the game closes. A toast at startup confirms
+it's running. No UAC: same-user PROCESS_VM_READ needs no elevation (since
+v1.0.3; if Steam itself runs elevated, the overlay shows a run-as-admin hint
+toast after ~12 s). Build config: `RavenswatchOverlay.spec` (bundles `icons/`,
+exe icon generated from the Fairy Godmother PNG by `build.py`).
 
 The overlay window is a native layered click-through topmost window — it never
 steals focus or mouse input and works over borderless fullscreen. Text/icons
@@ -254,7 +255,8 @@ Endpoints: `/` (page), `/data` (JSON), `/icons/<png>` (whitelisted).
 - `mss` for screenshots, `Pillow` for icons/overlay rendering (requirements.txt)
 - `pyinstaller` for building the exe (requirements-dev.txt)
 - Windows only (ctypes win32 APIs)
-- Admin required for memory reading (UAC manifest on the exe handles this)
+- No admin needed for memory reading (same-user PROCESS_VM_READ) — unless the
+  game itself runs elevated (Steam as admin), then run the tools elevated too
 
 ## Game flow (for AI agents)
 

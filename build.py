@@ -5,14 +5,12 @@ Usage (from the project root):
     pip install -r requirements.txt -r requirements-dev.txt
     python build.py              -> dist/RavenswatchOverlay.exe
     python build.py --debug      -> also builds dist/RavenswatchOverlay-debug.exe
-                                    (console window, no UAC prompt; for testing)
+                                    (console window; for testing)
 
-The exe bundles Python, tkinter, Pillow and the icons/ directory — end users
-need no Python install. It carries a UAC manifest (requireAdministrator)
-because reading game memory needs admin rights on most setups.
-
-Double-click the exe to launch the overlay. `RavenswatchOverlay.exe serve`
-runs the OBS browser-source server instead (see ravenswatch/server.py).
+The exe bundles Python, Pillow and the icons/ directory — end users need no
+Python install. No UAC manifest: reading a same-user process needs no
+elevation. (If Steam itself runs elevated, the overlay shows a hint to
+right-click -> Run as administrator.)
 """
 
 import argparse

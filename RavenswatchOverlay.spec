@@ -40,7 +40,9 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
     icon='build/app_icon.ico',
-    uac_admin=True,  # memory reading needs admin on most setups
+    # no UAC: same-user PROCESS_VM_READ needs no elevation. If Steam itself
+    # runs elevated, the overlay shows a hint to run it as admin manually.
+    uac_admin=False,
 )
 
 if os.environ.get('RAVENSWATCH_DEBUG_EXE') == '1':

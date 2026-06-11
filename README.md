@@ -77,10 +77,8 @@ Grab `RavenswatchOverlay.exe` from the **[latest release](../../releases/latest)
 
 ## How to use
 
-1. Double-click `RavenswatchOverlay.exe`
-2. Accept the admin prompt (the overlay reads melody data from the game's memory,
-   which requires admin rights)
-3. That's it. Start Ravenswatch whenever — once you're in a run, the melodies
+1. Double-click `RavenswatchOverlay.exe` — no install, no admin prompt
+2. That's it. Start Ravenswatch whenever — once you're in a run, the melodies
    fade in over the HUD staff. The overlay hides in the lobby and closes itself
    when you quit the game.
 
@@ -96,7 +94,11 @@ Grab `RavenswatchOverlay.exe` from the **[latest release](../../releases/latest)
   tools flag packed exes as suspicious; that's a false positive.
 - **Display-only.** The window is click-through and never takes focus — it can't
   interfere with your inputs. It only *reads* process memory (like an
-  autosplitter) and touches no game files.
+  autosplitter) and touches no game files. Reading a same-user process needs no
+  admin rights, so the overlay never asks for elevation.
+- **Unless Steam itself runs as administrator** (rare): then Windows blocks the
+  read and the overlay tells you — right-click the exe → *Run as administrator*
+  in that case.
 - **Fair-play note:** this reveals information the game intentionally hides.
   Fine for achievement grinding, seed hunting, and tool-assisted/showcase
   content — your call whether it belongs in unassisted runs.

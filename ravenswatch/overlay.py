@@ -34,6 +34,7 @@ STAFF_DOT_RY = 0.912
 NOTE_COLORS = {4: (0x16, 0xc7, 0x9a), 5: (0xf5, 0xa6, 0x23), 6: (0xe9, 0x45, 0x60)}
 REFRESH_INTERVAL = 4.0
 TOAST_SECONDS = 8.0
+ACCESS_HINT_POLLS = 3  # game running but unreadable for this many polls -> show hint
 
 # reference sizes at 2160p game height, scaled by actual height
 REF_H = 2160
@@ -291,10 +292,7 @@ class MelodyOverlay:
         oy = top + int(gh * STAFF_DOT_RY) - height + int(5 * s)
         self._win.show_image(img, ox, oy)
 
-    def _render_toast(self, game_running: bool):
-        text = ("Melody overlay active — melodies appear during runs"
-                if game_running else
-                "Melody overlay — waiting for Ravenswatch...")
+    def _render_toast(self, text: str):
         font = self._font(18)
         tmp = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
         tw = int(tmp.textlength(text, font=font))
@@ -315,6 +313,7 @@ class MelodyOverlay:
         seen_game = False
         toast_until = time.time() + TOAST_SECONDS
         next_poll = 0.0
+        denied_polls = 0  # consecutive polls where the game ran but we couldn't open it
         try:
             while True:
                 self._win.pump()
@@ -331,17 +330,33 @@ class MelodyOverlay:
                     if running:
                         hwnd = process.find_window()
                         rect = process.get_window_rect(hwnd) if hwnd else None
-                        try:
-                            info = self._reader.read_run_info()
-                        except Exception:
-                            info = None
+                        if self._reader.connected or self._reader.connect():
+                            denied_polls = 0
+                            try:
+                                info = self._reader.read_run_info()
+                            except Exception:
+                                info = None
+                        else:
+                            denied_polls += 1
+                    else:
+                        denied_polls = 0
 
                     if info and rect:
                         self._render_melodies(info[0], info[1], rect)
                     else:
                         self._prev_states = None
-                        if now < toast_until:
-                            self._render_toast(running)
+                        if denied_polls >= ACCESS_HINT_POLLS:
+                            # game is elevated (e.g. Steam runs as admin) and
+                            # we can't read it from a normal process
+                            self._render_toast(
+                                "Melody overlay can't read the game — if Steam "
+                                "runs as administrator, run the overlay as "
+                                "administrator too")
+                        elif now < toast_until:
+                            self._render_toast(
+                                "Melody overlay active — melodies appear during runs"
+                                if running else
+                                "Melody overlay — waiting for Ravenswatch...")
                         else:
                             self._win.hide()
                 time.sleep(0.05)
