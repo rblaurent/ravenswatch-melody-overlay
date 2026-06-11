@@ -41,9 +41,8 @@ REF_ICON = 56
 REF_FONT = 15
 REF_COL_W = 160
 
-TEXT_ALPHA = 235
-ICON_ALPHA = 165
-ICON_ALPHA_ACTIVE = 220
+# global fade applied to the composed frame, like the old whole-window 0.3 alpha
+OVERLAY_ALPHA = 0.35
 
 # --- win32 constants ---
 WS_POPUP = 0x80000000
@@ -260,23 +259,22 @@ class MelodyOverlay:
 
             tw = draw.textlength(m.display_name, font=font)
             tx = cx - tw / 2
-            draw.text((tx, 2), m.display_name, font=font,
-                      fill=color + (TEXT_ALPHA,),
-                      stroke_width=2, stroke_fill=(0, 0, 0, TEXT_ALPHA))
+            draw.text((tx, 2), m.display_name, font=font, fill=color + (255,),
+                      stroke_width=2, stroke_fill=(0, 0, 0, 255))
             if is_active:
                 uy = 2 + font_px + 4
-                draw.line([(tx, uy), (tx + tw, uy)], fill=color + (TEXT_ALPHA,),
+                draw.line([(tx, uy), (tx + tw, uy)], fill=color + (255,),
                           width=max(2, int(2 * s)))
 
             icon = self._icon(m.display_name, icon_px)
             if icon:
-                faded = icon.copy()
-                alpha = ICON_ALPHA_ACTIVE if is_active else ICON_ALPHA
-                faded.putalpha(faded.getchannel("A").point(lambda v: v * alpha // 255))
-                img.alpha_composite(faded, (cx - icon_px // 2, text_h + 4))
+                img.alpha_composite(icon, (cx - icon_px // 2, text_h + 4))
+
+        img.putalpha(img.getchannel("A").point(lambda v: int(v * OVERLAY_ALPHA)))
 
         ox = left + dot_xs[0] - half
-        oy = top + int(gh * STAFF_DOT_RY) - height - int(20 * s)
+        # icon bottoms rest on the staff dots row, like the original overlay
+        oy = top + int(gh * STAFF_DOT_RY) - height + int(5 * s)
         self._win.show_image(img, ox, oy)
 
     def _render_toast(self, game_running: bool):
