@@ -40,10 +40,10 @@ from .melody_data import identify, Melody
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-UI_VIEWER_VTABLE_RVA = 0xf295a0
-CPNT_VTABLE_RVA = 0xed2320
-HERO_VTABLE_RVA = 0xf2b930
-BASE_CPNT_REGISTRY_RVA = 0x14388c8  # static {MelodyEntityCpnt** buf, u32 count} of the 12 base instances
+UI_VIEWER_VTABLE_RVA = 0xf2e910
+CPNT_VTABLE_RVA = 0xed74a0
+HERO_VTABLE_RVA = 0xf30ca0
+BASE_CPNT_REGISTRY_RVA = 0x143ef08  # static {MelodyEntityCpnt** buf, u32 count} of the 12 base instances
 CTX_MELODY_SLOTS_OFFSET = 0x760     # 3 x 16-byte melody GUIDs in the hero's scene context
 B_GUID_OFFSET = 0x1c8               # melody asset GUID inside the B object
 HERO_MELODY_ARRAY_OFFSET = 0x13a0   # {MelodyEntityCpnt** buf} at +0x13a0, u32 count at +0x13a8
@@ -255,6 +255,23 @@ class MemoryReader:
             return guid_map
         for i in range(count):
             cpnt = struct.unpack_from('<Q', buf, i * 8)[0]
+            entity = _read_ptr(h, cpnt + 0x08) if cpnt else None
+            b = _read_ptr(h, entity + 0x28) if entity else None
+            if not b:
+                continue
+            guid = _read_mem(h, b + B_GUID_OFFSET, 16)
+            name = _resolve_b_name(h, b)
+            melody = identify(name) if name else None
+            if guid and len(guid) == 16 and melody:
+                guid_map[bytes(guid)] = melody
+        if len(guid_map) >= 3:
+            return guid_map
+
+        # Game patches often shift the static registry RVA. If that happens,
+        # fall back to scanning live/base MelodyEntityCpnt instances by vtable.
+        # This is slower, but keeps detection working as long as the component
+        # layout itself is stable.
+        for cpnt in _scan_for_pointer(h, self._base + CPNT_VTABLE_RVA):
             entity = _read_ptr(h, cpnt + 0x08) if cpnt else None
             b = _read_ptr(h, entity + 0x28) if entity else None
             if not b:
