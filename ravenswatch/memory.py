@@ -191,9 +191,6 @@ class MemoryReader:
             return False
 
         self._registry_rva = find_melody_registry(handle, base, self._cpnt_vtable_rva)
-
-        self._cached_guid_map = self._melody_guid_map()
-        self._cached_heroes = _scan_for_pointer(handle, base + self._hero_vtable_rva)
         return True
 
     def disconnect(self):
@@ -298,7 +295,10 @@ class MemoryReader:
             return None
         h = self._handle
 
-        if self._cached_guid_map is None:
+        if not self._cached_guid_map:
+            if not self._registry_rva:
+                self._registry_rva = find_melody_registry(
+                    h, self._base, self._cpnt_vtable_rva)
             self._cached_guid_map = self._melody_guid_map()
         guid_map = self._cached_guid_map
         if len(guid_map) < 3:
