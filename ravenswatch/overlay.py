@@ -6,26 +6,29 @@ UpdateLayeredWindow) — the standard technique for game overlays. It works
 over borderless-fullscreen games, never takes focus or mouse input, and
 needs no GUI toolkit: frames are composed with Pillow and blitted via GDI.
 
-Lifecycle (noobie-proof): start it any time. It waits for the game, shows
-one icon + name above each of the three HUD staff dots while in a run
-(active melody underlined, note-count color coding), hides in the lobby,
-and exits automatically when the game closes.
+Lifecycle: start it any time. Only one instance can run (enforced via named
+mutex). A system tray icon shows current status and provides an Exit action.
+The overlay waits for the game, shows melody icons above the HUD staff dots
+while in a run, hides in the lobby, and exits when the game closes.
 """
 
 import ctypes
 import ctypes.wintypes as wt
+import sys
+import threading
 import time
 
 from PIL import Image, ImageDraw, ImageFont
 
 from .memory import MemoryReader
 from .melody_data import Melody
-from .resources import icon_path
+from .resources import icon_path, icons_dir
 from . import process
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
 gdi32 = ctypes.WinDLL("gdi32", use_last_error=True)
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+shell32 = ctypes.WinDLL("shell32", use_last_error=True)
 
 # --- layout (relative to the game window; tuned on the live HUD) ---
 STAFF_DOTS_RX = [0.749, 0.778, 0.810]
@@ -33,23 +36,20 @@ STAFF_DOT_RY = 0.912
 
 NOTE_COLORS = {4: (0x16, 0xc7, 0x9a), 5: (0xf5, 0xa6, 0x23), 6: (0xe9, 0x45, 0x60)}
 REFRESH_INTERVAL = 4.0
-TOAST_SECONDS = 8.0
-ACCESS_HINT_POLLS = 3  # game running but unreadable for this many polls -> show hint
+ACCESS_HINT_POLLS = 3
 
-# reference sizes at 2160p game height, scaled by actual height
 REF_H = 2160
 REF_ICON = 56
 REF_FONT = 15
 REF_COL_W = 160
 
-# global fade applied to the composed frame, like the old whole-window 0.3 alpha
 OVERLAY_ALPHA = 0.35
 
 # --- win32 constants ---
 WS_POPUP = 0x80000000
 WS_EX_TOPMOST = 0x00000008
-WS_EX_TRANSPARENT = 0x00000020  # click-through
-WS_EX_TOOLWINDOW = 0x00000080   # no taskbar / alt-tab entry
+WS_EX_TRANSPARENT = 0x00000020
+WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_LAYERED = 0x00080000
 WS_EX_NOACTIVATE = 0x08000000
 SW_HIDE = 0
@@ -57,6 +57,26 @@ SW_SHOWNOACTIVATE = 4
 ULW_ALPHA = 2
 AC_SRC_ALPHA = 1
 PM_REMOVE = 1
+WM_COMMAND = 0x0111
+WM_DESTROY = 0x0002
+WM_TRAYICON = 0x8000  # WM_APP
+NIM_ADD = 0
+NIM_MODIFY = 1
+NIM_DELETE = 2
+NIF_MESSAGE = 1
+NIF_ICON = 2
+NIF_TIP = 4
+MF_STRING = 0
+MF_SEPARATOR = 0x0800
+MF_GRAYED = 1
+TPM_RIGHTBUTTON = 2
+IDM_EXIT = 1001
+IDM_STATUS = 1000
+IDM_TOGGLE = 1002
+MF_CHECKED = 0x0008
+MF_UNCHECKED = 0x0000
+ERROR_ALREADY_EXISTS = 183
+MUTEX_NAME = "Global\\RavenswatchMelodyOverlay"
 
 WNDPROC = ctypes.WINFUNCTYPE(ctypes.c_longlong, wt.HWND, ctypes.c_uint, wt.WPARAM, wt.LPARAM)
 
@@ -88,7 +108,37 @@ class _BLENDFUNCTION(ctypes.Structure):
     ]
 
 
-# 64-bit safe signatures for everything returning/taking pointers
+class _NOTIFYICONDATAW(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wt.DWORD),
+        ("hWnd", ctypes.c_void_p),
+        ("uID", wt.UINT),
+        ("uFlags", wt.UINT),
+        ("uCallbackMessage", wt.UINT),
+        ("hIcon", ctypes.c_void_p),
+        ("szTip", ctypes.c_wchar * 128),
+        ("dwState", wt.DWORD),
+        ("dwStateMask", wt.DWORD),
+        ("szInfo", ctypes.c_wchar * 256),
+        ("uVersion", wt.UINT),
+        ("szInfoTitle", ctypes.c_wchar * 64),
+        ("dwInfoFlags", wt.DWORD),
+        ("guidItem", ctypes.c_byte * 16),
+        ("hBalloonIcon", ctypes.c_void_p),
+    ]
+
+
+class _ICONINFO(ctypes.Structure):
+    _fields_ = [
+        ("fIcon", wt.BOOL),
+        ("xHotspot", wt.DWORD),
+        ("yHotspot", wt.DWORD),
+        ("hbmMask", ctypes.c_void_p),
+        ("hbmColor", ctypes.c_void_p),
+    ]
+
+
+# 64-bit safe signatures
 user32.DefWindowProcW.restype = ctypes.c_longlong
 user32.DefWindowProcW.argtypes = [wt.HWND, ctypes.c_uint, wt.WPARAM, wt.LPARAM]
 user32.CreateWindowExW.restype = ctypes.c_void_p
@@ -117,18 +167,178 @@ gdi32.SelectObject.restype = ctypes.c_void_p
 gdi32.SelectObject.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
 gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
 gdi32.DeleteDC.argtypes = [ctypes.c_void_p]
+gdi32.CreateBitmap.restype = ctypes.c_void_p
+gdi32.CreateBitmap.argtypes = [ctypes.c_int, ctypes.c_int, wt.UINT, wt.UINT, ctypes.c_void_p]
 kernel32.GetModuleHandleW.restype = ctypes.c_void_p
 kernel32.GetModuleHandleW.argtypes = [wt.LPCWSTR]
+kernel32.CreateMutexW.restype = ctypes.c_void_p
+kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wt.BOOL, wt.LPCWSTR]
+shell32.Shell_NotifyIconW.argtypes = [wt.DWORD, ctypes.c_void_p]
+shell32.Shell_NotifyIconW.restype = wt.BOOL
+user32.CreatePopupMenu.restype = ctypes.c_void_p
+user32.AppendMenuW.argtypes = [ctypes.c_void_p, wt.UINT, ctypes.c_size_t, wt.LPCWSTR]
+user32.TrackPopupMenu.argtypes = [
+    ctypes.c_void_p, wt.UINT, ctypes.c_int, ctypes.c_int,
+    ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+]
+user32.DestroyMenu.argtypes = [ctypes.c_void_p]
+user32.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+user32.GetCursorPos.argtypes = [ctypes.POINTER(wt.POINT)]
+user32.CreateIconIndirect.restype = ctypes.c_void_p
+user32.CreateIconIndirect.argtypes = [ctypes.c_void_p]
+user32.DestroyIcon.argtypes = [ctypes.c_void_p]
+user32.PostMessageW.argtypes = [ctypes.c_void_p, wt.UINT, wt.WPARAM, wt.LPARAM]
 
 
 def _set_dpi_aware():
-    """Opt into per-monitor DPI awareness so window coords are physical pixels."""
     try:
         user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
-        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))  # PER_MONITOR_AWARE_V2
+        user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
     except (AttributeError, OSError):
         pass
 
+
+def _create_hicon(img: Image.Image, size: int = 32):
+    """Create a win32 HICON from a Pillow RGBA image."""
+    img = img.convert("RGBA").resize((size, size), Image.LANCZOS)
+    screen_dc = user32.GetDC(None)
+    bmi = _BITMAPINFOHEADER()
+    bmi.biSize = ctypes.sizeof(bmi)
+    bmi.biWidth = size
+    bmi.biHeight = -size
+    bmi.biPlanes = 1
+    bmi.biBitCount = 32
+    bits = ctypes.c_void_p()
+    hbmp_color = gdi32.CreateDIBSection(screen_dc, ctypes.byref(bmi), 0,
+                                         ctypes.byref(bits), None, 0)
+    ctypes.memmove(bits, img.tobytes("raw", "BGRA"), size * size * 4)
+    user32.ReleaseDC(None, screen_dc)
+    hbmp_mask = gdi32.CreateBitmap(size, size, 1, 1, None)
+    ii = _ICONINFO()
+    ii.fIcon = True
+    ii.hbmMask = hbmp_mask
+    ii.hbmColor = hbmp_color
+    hicon = user32.CreateIconIndirect(ctypes.byref(ii))
+    gdi32.DeleteObject(hbmp_color)
+    gdi32.DeleteObject(hbmp_mask)
+    return hicon
+
+
+def _load_app_icon():
+    """Load the app icon (Fairy Godmother) as an HICON for the tray."""
+    path = icon_path("Fairy Godmother")
+    if path:
+        return _create_hicon(Image.open(path), 32)
+    return user32.LoadIconW(None, ctypes.c_void_p(32512))  # IDI_APPLICATION
+
+
+# --- singleton mutex ---
+
+def _acquire_mutex():
+    """Returns mutex handle if we're the first instance, None if already running."""
+    h = kernel32.CreateMutexW(None, True, MUTEX_NAME)
+    if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
+        kernel32.CloseHandle(h)
+        return None
+    return h
+
+
+# --- tray icon ---
+
+_tray_instance = None
+
+
+def _tray_wndproc(hwnd, msg, wparam, lparam):
+    global _tray_instance
+    if msg == WM_TRAYICON and _tray_instance:
+        event = lparam & 0xFFFF
+        if event == 0x0205:  # WM_RBUTTONUP
+            _tray_instance._show_menu()
+            return 0
+        if event == 0x0203:  # WM_LBUTTONDBLCLK
+            _tray_instance._show_menu()
+            return 0
+    elif msg == WM_COMMAND and _tray_instance:
+        cmd = wparam & 0xFFFF
+        if cmd == IDM_EXIT:
+            _tray_instance.exit_requested = True
+            return 0
+        if cmd == IDM_TOGGLE:
+            _tray_instance.overlay_visible = not _tray_instance.overlay_visible
+            return 0
+    return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+
+class _TrayIcon:
+    CLASS_NAME = "RavenswatchTrayMsg"
+
+    def __init__(self):
+        global _tray_instance
+        _tray_instance = self
+        self.exit_requested = False
+        self.overlay_visible = True
+        self.melody_lines = []  # ["Galahad ♫", "Lady of the Lake", ...]
+        self._hicon = _load_app_icon()
+
+        self._wndproc_ref = WNDPROC(_tray_wndproc)
+        hinst = kernel32.GetModuleHandleW(None)
+        wc = _WNDCLASSW()
+        wc.lpfnWndProc = self._wndproc_ref
+        wc.hInstance = hinst
+        wc.lpszClassName = self.CLASS_NAME
+        user32.RegisterClassW(ctypes.byref(wc))
+
+        self._hwnd = user32.CreateWindowExW(
+            0, self.CLASS_NAME, "RavenswatchTray", 0,
+            0, 0, 0, 0, None, None, hinst, None,
+        )
+
+        self._nid = _NOTIFYICONDATAW()
+        self._nid.cbSize = ctypes.sizeof(_NOTIFYICONDATAW)
+        self._nid.hWnd = self._hwnd
+        self._nid.uID = 1
+        self._nid.uFlags = NIF_ICON | NIF_TIP | NIF_MESSAGE
+        self._nid.uCallbackMessage = WM_TRAYICON
+        self._nid.hIcon = self._hicon
+        self._nid.szTip = "Ravenswatch Melody Overlay"
+        shell32.Shell_NotifyIconW(NIM_ADD, ctypes.byref(self._nid))
+
+    def update_tooltip(self, text: str):
+        tip = text[:127]
+        self._nid.uFlags = NIF_TIP
+        self._nid.szTip = tip
+        shell32.Shell_NotifyIconW(NIM_MODIFY, ctypes.byref(self._nid))
+
+    def _show_menu(self):
+        menu = user32.CreatePopupMenu()
+        if self.melody_lines:
+            for line in self.melody_lines:
+                user32.AppendMenuW(menu, MF_GRAYED, 0, line)
+        else:
+            user32.AppendMenuW(menu, MF_GRAYED, 0, self._nid.szTip)
+        user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+        check = MF_CHECKED if self.overlay_visible else MF_UNCHECKED
+        user32.AppendMenuW(menu, MF_STRING | check, IDM_TOGGLE, "Show overlay")
+        user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+        user32.AppendMenuW(menu, MF_STRING, IDM_EXIT, "Exit")
+
+        pt = wt.POINT()
+        user32.GetCursorPos(ctypes.byref(pt))
+        user32.SetForegroundWindow(self._hwnd)
+        user32.TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, self._hwnd, None)
+        user32.DestroyMenu(menu)
+        user32.PostMessageW(self._hwnd, 0, 0, 0)
+
+    def destroy(self):
+        global _tray_instance
+        shell32.Shell_NotifyIconW(NIM_DELETE, ctypes.byref(self._nid))
+        user32.DestroyWindow(self._hwnd)
+        if self._hicon:
+            user32.DestroyIcon(self._hicon)
+        _tray_instance = None
+
+
+# --- layered window ---
 
 class _LayeredWindow:
     """Topmost click-through window painted from a Pillow RGBA image."""
@@ -142,7 +352,7 @@ class _LayeredWindow:
         wc.lpfnWndProc = self._wndproc
         wc.hInstance = hinst
         wc.lpszClassName = self.CLASS_NAME
-        user32.RegisterClassW(ctypes.byref(wc))  # may already exist; fine
+        user32.RegisterClassW(ctypes.byref(wc))
         self.hwnd = user32.CreateWindowExW(
             WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST
             | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
@@ -154,21 +364,20 @@ class _LayeredWindow:
         self._visible = False
 
     def show_image(self, img: Image.Image, x: int, y: int):
-        """Blit an RGBA image to the window at screen position (x, y)."""
         w, h = img.size
         screen_dc = user32.GetDC(None)
         mem_dc = gdi32.CreateCompatibleDC(screen_dc)
         bmi = _BITMAPINFOHEADER()
         bmi.biSize = ctypes.sizeof(_BITMAPINFOHEADER)
         bmi.biWidth = w
-        bmi.biHeight = -h  # top-down
+        bmi.biHeight = -h
         bmi.biPlanes = 1
         bmi.biBitCount = 32
         bits = ctypes.c_void_p()
         hbmp = gdi32.CreateDIBSection(screen_dc, ctypes.byref(bmi), 0,
                                       ctypes.byref(bits), None, 0)
         old = gdi32.SelectObject(mem_dc, hbmp)
-        ctypes.memmove(bits, img.tobytes("raw", "BGRa"), w * h * 4)  # premultiplied BGRA
+        ctypes.memmove(bits, img.tobytes("raw", "BGRa"), w * h * 4)
 
         blend = _BLENDFUNCTION(0, 0, 255, AC_SRC_ALPHA)
         pos = wt.POINT(x, y)
@@ -210,16 +419,16 @@ def _load_font(px: int):
     return ImageFont.load_default()
 
 
+# --- melody overlay ---
+
 class MelodyOverlay:
     def __init__(self):
         _set_dpi_aware()
         self._win = _LayeredWindow()
         self._reader = MemoryReader()
-        self._icon_cache = {}  # (name, size) -> RGBA image
-        self._font_cache = {}  # px -> font
-        self._prev_states = None  # last per-slot states, for the hide debounce
-
-    # --- rendering ---
+        self._icon_cache = {}
+        self._font_cache = {}
+        self._prev_states = None
 
     def _font(self, px: int):
         if px not in self._font_cache:
@@ -253,10 +462,6 @@ class MelodyOverlay:
         width = dot_xs[-1] - dot_xs[0] + col_w
         centers = [x - dot_xs[0] + half for x in dot_xs]
 
-        # completed melodies (state 2) are drawn on the staff by the game HUD
-        # itself, so the overlay must not draw on top of them. Debounce: only
-        # trust "completed" once it's been read twice in a row, so a single
-        # transient misread can't blank a slot.
         prev = self._prev_states if self._prev_states is not None else states
         self._prev_states = states
         hidden = [st >= 2 and pv >= 2 for st, pv in zip(states, prev)]
@@ -288,80 +493,107 @@ class MelodyOverlay:
         img.putalpha(img.getchannel("A").point(lambda v: int(v * OVERLAY_ALPHA)))
 
         ox = left + dot_xs[0] - half
-        # icon bottoms rest on the staff dots row, like the original overlay
         oy = top + int(gh * STAFF_DOT_RY) - height + int(5 * s)
         self._win.show_image(img, ox, oy)
 
-    def _render_toast(self, text: str):
-        font = self._font(18)
-        tmp = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
-        tw = int(tmp.textlength(text, font=font))
-        pad_x, pad_y = 22, 12
-        w, h = tw + 2 * pad_x, 18 + 2 * pad_y
-        img = Image.new("RGBA", (w, h), (0, 0, 0, 0))
-        draw = ImageDraw.Draw(img)
-        draw.rounded_rectangle([0, 0, w - 1, h - 1], radius=h // 2,
-                               fill=(10, 12, 24, 215), outline=(245, 166, 35, 235), width=2)
-        draw.text((pad_x, pad_y - 2), text, font=font, fill=(255, 255, 255, 245))
-        sw = user32.GetSystemMetrics(0)
-        sh = user32.GetSystemMetrics(1)
-        self._win.show_image(img, (sw - w) // 2, int(sh * 0.82))
+    def _status_text(self, running: bool, connected: bool,
+                     info: tuple | None, denied: int) -> str:
+        if not running:
+            return "Waiting for Ravenswatch..."
+        if denied >= ACCESS_HINT_POLLS:
+            return "Can't read game (run as admin?)"
+        if not connected:
+            return "Connecting..."
+        if info:
+            melodies, states = info
+            parts = []
+            for m, st in zip(melodies, states):
+                label = m.display_name
+                if st == 1:
+                    label += " ♫"
+                elif st >= 2:
+                    label += " ✓"
+                parts.append(label)
+            return " | ".join(parts)
+        return "In lobby"
 
-    # --- main loop ---
+    def _poll_loop(self):
+        """Background thread: polls game memory, stores results."""
+        seen_game = False
+        denied_polls = 0
+        while not self._stop_event.is_set():
+            running = process.is_running()
+            if running:
+                seen_game = True
+            elif seen_game:
+                self._game_closed = True
+                return
+
+            info = None
+            rect = None
+            connected = False
+            if running:
+                hwnd = process.find_window()
+                rect = process.get_window_rect(hwnd) if hwnd else None
+                if self._reader.connected or self._reader.connect():
+                    denied_polls = 0
+                    connected = True
+                    try:
+                        info = self._reader.read_run_info()
+                    except Exception:
+                        info = None
+                else:
+                    denied_polls += 1
+            else:
+                denied_polls = 0
+
+            self._poll_result = (running, connected, info, rect, denied_polls)
+            self._stop_event.wait(REFRESH_INTERVAL)
 
     def run(self):
-        seen_game = False
-        toast_until = time.time() + TOAST_SECONDS
-        next_poll = 0.0
-        denied_polls = 0  # consecutive polls where the game ran but we couldn't open it
+        mutex = _acquire_mutex()
+        if not mutex:
+            return
+
+        tray = _TrayIcon()
+        self._stop_event = threading.Event()
+        self._game_closed = False
+        self._poll_result = (False, False, None, None, 0)
+
+        poller = threading.Thread(target=self._poll_loop, daemon=True)
+        poller.start()
+
         try:
-            while True:
+            while not tray.exit_requested and not self._game_closed:
                 self._win.pump()
-                now = time.time()
-                if now >= next_poll:
-                    next_poll = now + REFRESH_INTERVAL
-                    running = process.is_running()
-                    if running:
-                        seen_game = True
-                    elif seen_game:
-                        break  # game closed -> exit with it
 
-                    info = rect = None
-                    if running:
-                        hwnd = process.find_window()
-                        rect = process.get_window_rect(hwnd) if hwnd else None
-                        if self._reader.connected or self._reader.connect():
-                            denied_polls = 0
-                            try:
-                                info = self._reader.read_run_info()
-                            except Exception:
-                                info = None
-                        else:
-                            denied_polls += 1
-                    else:
-                        denied_polls = 0
+                running, connected, info, rect, denied_polls = self._poll_result
 
-                    if info and rect:
-                        self._render_melodies(info[0], info[1], rect)
-                    else:
-                        self._prev_states = None
-                        if denied_polls >= ACCESS_HINT_POLLS:
-                            # game is elevated (e.g. Steam runs as admin) and
-                            # we can't read it from a normal process
-                            self._render_toast(
-                                "Melody overlay can't read the game — if Steam "
-                                "runs as administrator, run the overlay as "
-                                "administrator too")
-                        elif now < toast_until:
-                            self._render_toast(
-                                "Melody overlay active — melodies appear during runs"
-                                if running else
-                                "Melody overlay — waiting for Ravenswatch...")
-                        else:
-                            self._win.hide()
+                status = self._status_text(running, connected, info, denied_polls)
+                tray.update_tooltip(status)
+                if info:
+                    melodies, states = info
+                    lines = []
+                    for m, st in zip(melodies, states):
+                        marker = " ♫" if st == 1 else (" ✓" if st >= 2 else "")
+                        lines.append(f"{m.display_name} ({m.notes} notes){marker}")
+                    tray.melody_lines = lines
+                else:
+                    tray.melody_lines = []
+
+                if info and rect and tray.overlay_visible:
+                    self._render_melodies(info[0], info[1], rect)
+                else:
+                    self._prev_states = None
+                    self._win.hide()
+
                 time.sleep(0.05)
         except KeyboardInterrupt:
             pass
         finally:
+            self._stop_event.set()
+            poller.join(timeout=2)
+            tray.destroy()
             self._win.destroy()
             self._reader.disconnect()
+            kernel32.CloseHandle(mutex)

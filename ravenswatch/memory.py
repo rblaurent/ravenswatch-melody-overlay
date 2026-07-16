@@ -163,6 +163,8 @@ class MemoryReader:
         self._cpnt_vtable_rva = None
         self._ui_viewer_vtable_rva = None
         self._registry_rva = None
+        self._cached_heroes = None
+        self._cached_guid_map = None
 
     def connect(self) -> bool:
         self.disconnect()
@@ -189,6 +191,9 @@ class MemoryReader:
             return False
 
         self._registry_rva = find_melody_registry(handle, base, self._cpnt_vtable_rva)
+
+        self._cached_guid_map = self._melody_guid_map()
+        self._cached_heroes = _scan_for_pointer(handle, base + self._hero_vtable_rva)
         return True
 
     def disconnect(self):
@@ -201,6 +206,8 @@ class MemoryReader:
             self._cpnt_vtable_rva = None
             self._ui_viewer_vtable_rva = None
             self._registry_rva = None
+            self._cached_heroes = None
+            self._cached_guid_map = None
 
     @property
     def connected(self) -> bool:
@@ -291,11 +298,15 @@ class MemoryReader:
             return None
         h = self._handle
 
-        guid_map = self._melody_guid_map()
+        if self._cached_guid_map is None:
+            self._cached_guid_map = self._melody_guid_map()
+        guid_map = self._cached_guid_map
         if len(guid_map) < 3:
             return None
 
-        heroes = _scan_for_pointer(h, self._base + self._hero_vtable_rva)
+        if self._cached_heroes is None:
+            self._cached_heroes = _scan_for_pointer(h, self._base + self._hero_vtable_rva)
+        heroes = self._cached_heroes
 
         melodies = None
         for hero in heroes:
@@ -311,7 +322,8 @@ class MemoryReader:
                 melodies = trio
                 break
         if melodies is None:
-            return None  # lobby/stale context: slots don't hold melody GUIDs
+            self._cached_heroes = None  # stale: re-scan on next call
+            return None
 
         states: dict[str, int] = {}
         for hero in heroes:
