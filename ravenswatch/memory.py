@@ -1,6 +1,11 @@
 """
 Memory reader for Ravenswatch process.
 
+Vtable addresses are resolved at runtime via MSVC RTTI (see rtti.py), so this
+module survives game patches without needing manual address updates. Field
+offsets within objects are still hardcoded — these are stable across minor
+patches but would need updating if class layouts change.
+
 Two detection paths:
 
 1. Active melody (the HUD "0/N" counter): find the MelodyUiViewerEntityCpnt via
@@ -12,23 +17,9 @@ Two detection paths:
    predetermined melody asset GUIDs in three 16-byte slots at context+0x760
    (slot order = unlock order; slot 0 is the first/active melody at run start).
    GUIDs are resolved to melodies through the static registry of the 12 base
-   MelodyEntityCpnt instances (module RVA 0x14388c8): each base cpnt leads to a
-   per-melody "B" object (cpnt+0x08 -> entity+0x28) which carries both the asset
-   GUID (B+0x1c8) and the name chain (B+0x70 -> C+0x48 -> D+0x18 -> path string).
-
-   Chain summary:
-     hero      = vtable scan, RVA 0xf2b930 (one instance per player; pooled)
-     context   = *(*(hero+0x08) + 0x30)   (null when not in a run)
-     guids     = context+0x760, 3 x 16 bytes
-     states    = spawned MelodyEntityCpnt lifecycle field at cpnt+0x68
-                 (1 = being collected, 2 = completed; verified live by watching
-                 two completions: the field flips 1->2 exactly when the next
-                 melody links). The cpnts are reached via the linked-melody
-                 array at hero+0x13a0 (count u32 at +0x13a8) of EVERY hero,
-                 because in multiplayer a single hero's array can lag.
-
-   When not in a run the context is null or its slots hold garbage that does not
-   match any known melody GUID, which is how we detect "no run".
+   MelodyEntityCpnt instances: each base cpnt leads to a per-melody "B" object
+   (cpnt+0x08 -> entity+0x28) which carries both the asset GUID (B+0x1c8) and
+   the name chain (B+0x70 -> C+0x48 -> D+0x18 -> path string).
 """
 
 import ctypes
@@ -37,13 +28,10 @@ import struct
 
 from . import process
 from .melody_data import identify, Melody
+from .rtti import resolve_vtables, find_melody_registry
 
 kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
-UI_VIEWER_VTABLE_RVA = 0xf295a0
-CPNT_VTABLE_RVA = 0xed2320
-HERO_VTABLE_RVA = 0xf2b930
-BASE_CPNT_REGISTRY_RVA = 0x14388c8  # static {MelodyEntityCpnt** buf, u32 count} of the 12 base instances
 CTX_MELODY_SLOTS_OFFSET = 0x760     # 3 x 16-byte melody GUIDs in the hero's scene context
 B_GUID_OFFSET = 0x1c8               # melody asset GUID inside the B object
 HERO_MELODY_ARRAY_OFFSET = 0x13a0   # {MelodyEntityCpnt** buf} at +0x13a0, u32 count at +0x13a8
@@ -171,6 +159,10 @@ class MemoryReader:
         self._handle = None
         self._pid = None
         self._base = None
+        self._hero_vtable_rva = None
+        self._cpnt_vtable_rva = None
+        self._ui_viewer_vtable_rva = None
+        self._registry_rva = None
 
     def connect(self) -> bool:
         self.disconnect()
@@ -186,6 +178,17 @@ class MemoryReader:
         self._pid = pid
         self._base = base
         self._handle = handle
+
+        vtables = resolve_vtables(handle, base)
+        self._hero_vtable_rva = vtables.get('hero_controller')
+        self._cpnt_vtable_rva = vtables.get('melody_cpnt')
+        self._ui_viewer_vtable_rva = vtables.get('melody_ui_viewer')
+
+        if not all([self._hero_vtable_rva, self._cpnt_vtable_rva, self._ui_viewer_vtable_rva]):
+            self.disconnect()
+            return False
+
+        self._registry_rva = find_melody_registry(handle, base, self._cpnt_vtable_rva)
         return True
 
     def disconnect(self):
@@ -194,6 +197,10 @@ class MemoryReader:
             self._handle = None
             self._pid = None
             self._base = None
+            self._hero_vtable_rva = None
+            self._cpnt_vtable_rva = None
+            self._ui_viewer_vtable_rva = None
+            self._registry_rva = None
 
     @property
     def connected(self) -> bool:
@@ -214,13 +221,11 @@ class MemoryReader:
         if not self.connected and not self.connect():
             return None
 
-        cpnt_vtable = self._base + CPNT_VTABLE_RVA
-        all_cpnts = set(_scan_for_pointer(self._handle, cpnt_vtable))
+        all_cpnts = set(_scan_for_pointer(self._handle, self._base + self._cpnt_vtable_rva))
         if not all_cpnts:
             return None
 
-        ui_vtable = self._base + UI_VIEWER_VTABLE_RVA
-        ui_instances = _scan_for_pointer(self._handle, ui_vtable)
+        ui_instances = _scan_for_pointer(self._handle, self._base + self._ui_viewer_vtable_rva)
         if not ui_instances:
             return None
 
@@ -240,11 +245,13 @@ class MemoryReader:
 
     def _melody_guid_map(self) -> dict[bytes, Melody]:
         """Build the {16-byte asset GUID: Melody} map from the static registry
-        of the 12 base MelodyEntityCpnt instances. No memory scan needed."""
+        of the 12 base MelodyEntityCpnt instances."""
         h = self._handle
         guid_map = {}
-        reg_buf = _read_ptr(h, self._base + BASE_CPNT_REGISTRY_RVA)
-        cnt_data = _read_mem(h, self._base + BASE_CPNT_REGISTRY_RVA + 8, 4)
+        if not self._registry_rva:
+            return guid_map
+        reg_buf = _read_ptr(h, self._base + self._registry_rva)
+        cnt_data = _read_mem(h, self._base + self._registry_rva + 8, 4)
         if not reg_buf or not cnt_data:
             return guid_map
         count = struct.unpack('<I', cnt_data)[0]
@@ -288,7 +295,7 @@ class MemoryReader:
         if len(guid_map) < 3:
             return None
 
-        heroes = _scan_for_pointer(h, self._base + HERO_VTABLE_RVA)
+        heroes = _scan_for_pointer(h, self._base + self._hero_vtable_rva)
 
         melodies = None
         for hero in heroes:
@@ -347,13 +354,11 @@ class MemoryReader:
         if not self.connected and not self.connect():
             return None
 
-        cpnt_vtable = self._base + CPNT_VTABLE_RVA
-        all_cpnts = set(_scan_for_pointer(self._handle, cpnt_vtable))
+        all_cpnts = set(_scan_for_pointer(self._handle, self._base + self._cpnt_vtable_rva))
         if not all_cpnts:
             return None
 
-        ui_vtable = self._base + UI_VIEWER_VTABLE_RVA
-        ui_instances = _scan_for_pointer(self._handle, ui_vtable)
+        ui_instances = _scan_for_pointer(self._handle, self._base + self._ui_viewer_vtable_rva)
         if not ui_instances:
             return None
 
