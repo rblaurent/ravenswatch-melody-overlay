@@ -73,6 +73,7 @@ TPM_RIGHTBUTTON = 2
 IDM_EXIT = 1001
 IDM_STATUS = 1000
 IDM_TOGGLE = 1002
+IDM_LABELS = 1003
 MF_CHECKED = 0x0008
 MF_UNCHECKED = 0x0000
 ERROR_ALREADY_EXISTS = 183
@@ -266,6 +267,9 @@ def _tray_wndproc(hwnd, msg, wparam, lparam):
         if cmd == IDM_TOGGLE:
             _tray_instance.overlay_visible = not _tray_instance.overlay_visible
             return 0
+        if cmd == IDM_LABELS:
+            _tray_instance.show_labels = not _tray_instance.show_labels
+            return 0
     return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
 
 
@@ -277,6 +281,7 @@ class _TrayIcon:
         _tray_instance = self
         self.exit_requested = False
         self.overlay_visible = True
+        self.show_labels = True
         self.melody_lines = []  # ["Galahad ♫", "Lady of the Lake", ...]
         self._hicon = _load_app_icon()
 
@@ -319,6 +324,8 @@ class _TrayIcon:
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         check = MF_CHECKED if self.overlay_visible else MF_UNCHECKED
         user32.AppendMenuW(menu, MF_STRING | check, IDM_TOGGLE, "Show overlay")
+        check_labels = MF_CHECKED if self.show_labels else MF_UNCHECKED
+        user32.AppendMenuW(menu, MF_STRING | check_labels, IDM_LABELS, "Show song labels")
         user32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         user32.AppendMenuW(menu, MF_STRING, IDM_EXIT, "Exit")
 
@@ -446,7 +453,7 @@ class MelodyOverlay:
         return self._icon_cache[key]
 
     def _render_melodies(self, melodies: list[Melody], states: list[int],
-                         rect: tuple[int, int, int, int]):
+                         rect: tuple[int, int, int, int], show_labels: bool = True):
         left, top, right, bottom = rect
         gw, gh = right - left, bottom - top
         s = gh / REF_H
@@ -454,7 +461,7 @@ class MelodyOverlay:
         font_px = max(11, int(REF_FONT * s))
         col_w = max(80, int(REF_COL_W * s))
         font = self._font(font_px)
-        text_h = font_px + 8
+        text_h = (font_px + 8) if show_labels else 0
         height = text_h + 4 + icon_px + 4
 
         dot_xs = [int(gw * rx) for rx in STAFF_DOTS_RX]
@@ -477,14 +484,15 @@ class MelodyOverlay:
             color = NOTE_COLORS.get(m.notes, (255, 255, 255))
             is_active = states[slot] == 1
 
-            tw = draw.textlength(m.display_name, font=font)
-            tx = cx - tw / 2
-            draw.text((tx, 2), m.display_name, font=font, fill=color + (255,),
-                      stroke_width=2, stroke_fill=(0, 0, 0, 255))
-            if is_active:
-                uy = 2 + font_px + 4
-                draw.line([(tx, uy), (tx + tw, uy)], fill=color + (255,),
-                          width=max(2, int(2 * s)))
+            if show_labels:
+                tw = draw.textlength(m.display_name, font=font)
+                tx = cx - tw / 2
+                draw.text((tx, 2), m.display_name, font=font, fill=color + (255,),
+                          stroke_width=2, stroke_fill=(0, 0, 0, 255))
+                if is_active:
+                    uy = 2 + font_px + 4
+                    draw.line([(tx, uy), (tx + tw, uy)], fill=color + (255,),
+                              width=max(2, int(2 * s)))
 
             icon = self._icon(m.display_name, icon_px)
             if icon:
@@ -582,7 +590,7 @@ class MelodyOverlay:
                     tray.melody_lines = []
 
                 if info and rect and tray.overlay_visible:
-                    self._render_melodies(info[0], info[1], rect)
+                    self._render_melodies(info[0], info[1], rect, tray.show_labels)
                 else:
                     self._prev_states = None
                     self._win.hide()
