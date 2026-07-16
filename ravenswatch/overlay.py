@@ -552,15 +552,9 @@ class MelodyOverlay:
 
     def _poll_loop(self):
         """Background thread: polls game memory, stores results."""
-        seen_game = False
         denied_polls = 0
         while not self._stop_event.is_set():
             running = process.is_running()
-            if running:
-                seen_game = True
-            elif seen_game:
-                self._game_closed = True
-                return
 
             info = None
             rect = None
@@ -578,6 +572,8 @@ class MelodyOverlay:
                 else:
                     denied_polls += 1
             else:
+                if self._reader._handle is not None:
+                    self._reader.disconnect()
                 denied_polls = 0
 
             self._poll_result = (running, connected, info, rect, denied_polls)
@@ -590,14 +586,13 @@ class MelodyOverlay:
 
         tray = _TrayIcon()
         self._stop_event = threading.Event()
-        self._game_closed = False
         self._poll_result = (False, False, None, None, 0)
 
         poller = threading.Thread(target=self._poll_loop, daemon=True)
         poller.start()
 
         try:
-            while not tray.exit_requested and not self._game_closed:
+            while not tray.exit_requested:
                 self._win.pump()
 
                 running, connected, info, rect, denied_polls = self._poll_result
