@@ -452,6 +452,24 @@ class MelodyOverlay:
             self._icon_cache[key] = img
         return self._icon_cache[key]
 
+    def _wrap_text(self, text: str, font, max_width: int) -> list[str]:
+        """Split text into lines that fit within max_width."""
+        if font.getlength(text) <= max_width:
+            return [text]
+        words = text.split()
+        if len(words) == 1:
+            return [text]
+        best_split = len(words) // 2
+        best_diff = float('inf')
+        for i in range(1, len(words)):
+            line1 = ' '.join(words[:i])
+            line2 = ' '.join(words[i:])
+            diff = abs(font.getlength(line1) - font.getlength(line2))
+            if diff < best_diff:
+                best_diff = diff
+                best_split = i
+        return [' '.join(words[:best_split]), ' '.join(words[best_split:])]
+
     def _render_melodies(self, melodies: list[Melody], states: list[int],
                          rect: tuple[int, int, int, int], show_labels: bool = True):
         left, top, right, bottom = rect
@@ -459,12 +477,20 @@ class MelodyOverlay:
         s = gh / REF_H
         icon_px = max(24, int(REF_ICON * s))
         font_px = max(11, int(REF_FONT * s))
-        col_w = max(80, int(REF_COL_W * s))
         font = self._font(font_px)
-        text_h = (font_px + 8) if show_labels else 0
-        height = text_h + 4 + icon_px + 4
 
         dot_xs = [int(gw * rx) for rx in STAFF_DOTS_RX]
+        col_w = min(dot_xs[i + 1] - dot_xs[i] for i in range(len(dot_xs) - 1))
+
+        line_h = font_px + 4
+        max_lines = 1
+        if show_labels:
+            for m in melodies:
+                lines = self._wrap_text(m.display_name, font, col_w - 4)
+                max_lines = max(max_lines, len(lines))
+        text_h = (line_h * max_lines + 4) if show_labels else 0
+        height = text_h + 4 + icon_px + 4
+
         half = col_w // 2
         width = dot_xs[-1] - dot_xs[0] + col_w
         centers = [x - dot_xs[0] + half for x in dot_xs]
@@ -482,17 +508,16 @@ class MelodyOverlay:
             if hidden[slot]:
                 continue
             color = NOTE_COLORS.get(m.notes, (255, 255, 255))
-            is_active = states[slot] == 1
 
             if show_labels:
-                tw = draw.textlength(m.display_name, font=font)
-                tx = cx - tw / 2
-                draw.text((tx, 2), m.display_name, font=font, fill=color + (255,),
-                          stroke_width=2, stroke_fill=(0, 0, 0, 255))
-                if is_active:
-                    uy = 2 + font_px + 4
-                    draw.line([(tx, uy), (tx + tw, uy)], fill=color + (255,),
-                              width=max(2, int(2 * s)))
+                lines = self._wrap_text(m.display_name, font, col_w - 4)
+                y_off = (max_lines - len(lines)) * line_h
+                for li, line in enumerate(lines):
+                    tw = draw.textlength(line, font=font)
+                    tx = cx - tw / 2
+                    ty = 2 + y_off + li * line_h
+                    draw.text((tx, ty), line, font=font, fill=color + (255,),
+                              stroke_width=2, stroke_fill=(0, 0, 0, 255))
 
             icon = self._icon(m.display_name, icon_px)
             if icon:
